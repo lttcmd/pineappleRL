@@ -1,23 +1,26 @@
+<b> 1. Go to your project folder: </b> <br>
+cd C:\path\to\project
 
-#1. For Windows (CUDA 12.1):
-    ```bash
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-    ```
+<b> 2. Create a virtual environment: </b> <br>
+python -m venv .venv
 
-  For Linux (CUDA 12.1):
-  ```bash
-  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-  ```
+<b> 3. Activate the virtual environment: </b>
+.venv\Scripts\Activate
 
-# 2. Verify GPU is detected
+<b> 4. Install PyTorch with CUDA 12.1: </b>
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+<b> 5. Check that the GPU is available: </b>
 python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
-# 3. Install other dependencies
-pip install -r requirements.txt
+<b> 6. Install the remaining required packages: </b>
+pip install numpy
+pip install tqdm
+pip install matplotlib
+pip install tensorboard
 
-# 4. Test the installation
-python test_one_hand.py
-
-# 5. Start training
+<b> 7. Start training: </b>
 python train.py
-```
+
+Training saves after 10,000 hands and prints results. 
+Interested to see what number of hands it gets per second....
