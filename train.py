@@ -7,10 +7,13 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 from collections import deque
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import numpy as np
 from tqdm import tqdm
 import time
+import os
+import glob
+import re
 
 from ofc_env import OfcEnv, State, Action
 from state_encoding import encode_state, get_input_dim
@@ -190,7 +193,36 @@ class SelfPlayTrainer:
         
         return loss.item()
     
-    def train(self, num_episodes: int, episodes_per_update: int = 10, eval_frequency: int = 1000):
+    def find_latest_checkpoint(self) -> Optional[Tuple[str, int]]:
+        """Find the latest checkpoint file and return (path, episode_number)."""
+        checkpoint_files = glob.glob('value_net_checkpoint_ep*.pth')
+        if not checkpoint_files:
+            return None
+        
+        # Extract episode numbers and find the latest
+        latest_episode = -1
+        latest_path = None
+        for path in checkpoint_files:
+            match = re.search(r'ep(\d+)\.pth', path)
+            if match:
+                episode = int(match.group(1))
+                if episode > latest_episode:
+                    latest_episode = episode
+                    latest_path = path
+        
+        return (latest_path, latest_episode) if latest_path else None
+    
+    def load_checkpoint(self, checkpoint_path: str) -> int:
+        """Load model from checkpoint. Returns episode number."""
+        print(f"Loading checkpoint: {checkpoint_path}")
+        self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
+        # Extract episode number from filename
+        match = re.search(r'ep(\d+)\.pth', checkpoint_path)
+        episode = int(match.group(1)) if match else 0
+        print(f"Resuming from episode {episode:,}")
+        return episode
+    
+    def train(self, num_episodes: int, episodes_per_update: int = 10, eval_frequency: int = 1000, resume: bool = True):
         """
         Train the model using self-play through millions of hands.
         The bot learns what good and bad choices are via RL.
@@ -216,18 +248,32 @@ class SelfPlayTrainer:
         total_zero = 0
         royalty_scores = []
         total_score = 0.0  # Track total score for average calculation
+        start_episode = 0
         
-        # Progress bar for episodes
-        pbar = tqdm(range(num_episodes), desc="Training", unit="hand")
+        # Try to resume from checkpoint if requested
+        if resume:
+            checkpoint_info = self.find_latest_checkpoint()
+            if checkpoint_info:
+                checkpoint_path, checkpoint_episode = checkpoint_info
+                self.load_checkpoint(checkpoint_path)
+                start_episode = checkpoint_episode + 1
+                print(f"Resuming training from episode {start_episode:,}")
+                print(f"Will train for {num_episodes - start_episode:,} more episodes (total target: {num_episodes:,})")
         
-        for episode in pbar:
+        # Progress bar for episodes (starting from resume point)
+        pbar = tqdm(range(start_episode, num_episodes), desc="Training", unit="hand", initial=start_episode, total=num_episodes)
+        
+        for episode_idx, episode in enumerate(pbar):
+            # episode is the actual episode number (0 to num_episodes-1, or start_episode to num_episodes-1)
+            # We need to track the absolute episode number for statistics
+            absolute_episode = episode
             # Gradually transition from random to learned policy
             # First 20%: pure random, then gradually use network
-            random_prob = max(0.0, 1.0 - (episode / (num_episodes * 0.8)))
+            random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
             use_random = random.random() < random_prob
             
             # Generate episode (using round-robin across parallel envs)
-            episode_data = self.generate_episode(use_random=use_random, env_idx=episode)
+            episode_data = self.generate_episode(use_random=use_random, env_idx=absolute_episode)
             
             # Track statistics
             if episode_data:
@@ -251,7 +297,7 @@ class SelfPlayTrainer:
                 
                 # Update progress bar
                 avg_loss = np.mean(losses[-100:]) if losses else 0.0
-                royalty_rate = (total_royalties / (episode + 1)) * 100 if episode > 0 else 0
+                royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
                 pbar.set_postfix({
                     'loss': f'{avg_loss:.4f}',
                     'buffer': len(self.replay_buffer),
@@ -260,20 +306,22 @@ class SelfPlayTrainer:
                 })
             
             # Periodic evaluation and checkpointing
-            if episode > 0 and episode % eval_frequency == 0:
-                pbar.write(f"\n--- Evaluation at episode {episode:,} ---\n")
+            if absolute_episode > 0 and absolute_episode % eval_frequency == 0:
+                # Clear progress bar and print clean evaluation
+                pbar.clear()
+                print(f"\n--- Evaluation at episode {absolute_episode:,} ---\n")
                 # Pass training stats to evaluation
-                training_foul_rate = (total_fouls / (episode + 1)) * 100 if episode > 0 else 0
-                avg_score_per_hand = total_score / (episode + 1) if episode > 0 else 0.0
-                self._evaluate(total_episodes=episode+1, total_fouls=total_fouls, 
+                training_foul_rate = (total_fouls / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
+                avg_score_per_hand = total_score / (absolute_episode + 1) if absolute_episode > 0 else 0.0
+                self._evaluate(total_episodes=absolute_episode+1, total_fouls=total_fouls, 
                               total_royalties=total_royalties, total_zero=total_zero,
                               training_foul_rate=training_foul_rate,
                               avg_score_per_hand=avg_score_per_hand)
                 
                 # Save checkpoint
-                checkpoint_path = f'value_net_checkpoint_ep{episode}.pth'
+                checkpoint_path = f'value_net_checkpoint_ep{absolute_episode}.pth'
                 torch.save(self.model.state_dict(), checkpoint_path)
-                pbar.write(f"\nCheckpoint saved: {checkpoint_path}\n")
+                print(f"\nCheckpoint saved: {checkpoint_path}\n")
         
         pbar.close()
         
