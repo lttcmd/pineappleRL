@@ -1,5 +1,5 @@
 <b> 1. pject folder: </b> <br>
-cd C:\path\to\project
+cd inside
 
 <b> 2. create environment: </b> <br>
 python -m venv .venv
