@@ -1,10 +1,10 @@
-<b> 1. Go to your project folder: </b> <br>
+<b> 1. pject folder: </b> <br>
 cd C:\path\to\project
 
-<b> 2. Create a virtual environment: </b> <br>
+<b> 2. create environment: </b> <br>
 python -m venv .venv
 
-<b> 3. Activate the virtual environment: </b>
+<b> 3. Activate environment: </b>
 .venv\Scripts\Activate
 
 <b> 4. Install PyTorch with CUDA 12.1: </b>
