@@ -676,11 +676,11 @@ def main():
     model = ValueNet(input_dim, hidden_dim=1024, dropout=0.1)  # 1024 hidden units for H200 power
     
     # Initialize trainer (will auto-detect CUDA)
-    # OPTIMIZED for H200: Balanced batch size for frequent training and GPU utilization
+    # OPTIMIZED for H200: Larger batch size for better GPU utilization
     trainer = SelfPlayTrainer(
         model=model,
-        buffer_size=1000000,  # 1M buffer for H200 - good diverse data
-        batch_size=512,  # Balanced batch size for H200 - frequent training, good GPU usage
+        buffer_size=2000000,  # 2M buffer for H200 - more diverse data
+        batch_size=1024,  # Larger batch size for H200 - better GPU utilization
         learning_rate=1e-3,
         use_cuda=True  # Will use CUDA if available
     )
