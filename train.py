@@ -334,7 +334,7 @@ class SelfPlayTrainer:
         # OPTIMIZATION: Use async queue to keep all CPU cores continuously busy
         # Maintain a queue of pending async tasks to ensure workers never idle
         pending_futures = {}  # {future: (episode_num, random_prob)}
-        max_pending = self.num_workers * 4  # Keep 4x workers worth of work queued (96 episodes)
+        max_pending = self.num_workers * 10  # Keep 10x workers worth of work queued (240 episodes) - AGGRESSIVE
         
         for episode_idx, episode in enumerate(pbar):
             absolute_episode = episode
@@ -389,9 +389,32 @@ class SelfPlayTrainer:
                         torch.save(self.model.state_dict(), checkpoint_path)
                         print(f"\nCheckpoint saved: {checkpoint_path}\n")
                 
-                # Limit queue size - if too many pending, wait for some to complete
+                # Limit queue size - process completed futures aggressively
+                # Process ALL completed futures immediately to keep queue flowing
+                completed = [f for f in pending_futures.keys() if f.ready()]
+                for future in completed:
+                    ep_num, rand_prob = pending_futures.pop(future)
+                    try:
+                        episode_data = future.get(timeout=0.1)
+                    except:
+                        continue
+                    
+                    # Process result
+                    if episode_data:
+                        final_score = episode_data[-1][1]
+                        total_score += final_score
+                        if final_score > 0:
+                            total_royalties += 1
+                            royalty_scores.append(final_score)
+                        elif final_score < 0:
+                            total_fouls += 1
+                        else:
+                            total_zero += 1
+                    self.add_to_buffer(episode_data)
+                
+                # Only wait if queue is still too full after processing
                 while len(pending_futures) >= max_pending:
-                    # Wait for at least one to complete
+                    # Check for more completed
                     completed = [f for f in pending_futures.keys() if f.ready()]
                     if completed:
                         future = completed[0]
@@ -400,8 +423,6 @@ class SelfPlayTrainer:
                             episode_data = future.get(timeout=0.1)
                         except:
                             continue
-                        
-                        # Process result (same as above)
                         if episode_data:
                             final_score = episode_data[-1][1]
                             total_score += final_score
@@ -414,28 +435,30 @@ class SelfPlayTrainer:
                                 total_zero += 1
                         self.add_to_buffer(episode_data)
                     else:
-                        time.sleep(0.001)  # Brief sleep if nothing ready
+                        time.sleep(0.0001)  # Very brief sleep
                 
-                # Update progress bar periodically
-                if len(pending_futures) > 0 and absolute_episode % 10 == 0:
-                    last_ep, last_rand_prob = list(pending_futures.values())[-1] if pending_futures else (absolute_episode, random_prob)
-                    if len(self.replay_buffer) >= self.batch_size:
-                        num_train_steps = 4 if len(self.replay_buffer) >= self.batch_size * 2 else 2
-                        for _ in range(num_train_steps):
-                            loss = self.train_step()
-                            losses.append(loss)
-                        
-                        avg_loss = np.mean(losses[-100:]) if losses else 0.0
-                        royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
-                        current_lr = self.optimizer.param_groups[0]['lr']
-                        pbar.set_postfix({
-                            'loss': f'{avg_loss:.4f}',
-                            'buffer': len(self.replay_buffer),
-                            'random%': f'{last_rand_prob*100:.1f}%',
-                            'royalties': f'{total_royalties} ({royalty_rate:.2f}%)',
-                            'lr': f'{current_lr:.2e}',
-                            'pending': len(pending_futures)
-                        })
+                # OPTIMIZATION: Train continuously to keep GPU at 100%
+                # Train on EVERY iteration if buffer has data - this keeps GPU busy
+                if len(self.replay_buffer) >= self.batch_size:
+                    # Train multiple times to saturate GPU
+                    num_train_steps = 8 if len(self.replay_buffer) >= self.batch_size * 2 else 4
+                    for _ in range(num_train_steps):
+                        loss = self.train_step()
+                        losses.append(loss)
+                
+                # Update progress bar every iteration
+                last_ep, last_rand_prob = list(pending_futures.values())[-1] if pending_futures else (absolute_episode, random_prob)
+                avg_loss = np.mean(losses[-100:]) if losses else 0.0
+                royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
+                current_lr = self.optimizer.param_groups[0]['lr'] if len(self.replay_buffer) >= self.batch_size else self.initial_lr
+                pbar.set_postfix({
+                    'loss': f'{avg_loss:.4f}',
+                    'buffer': len(self.replay_buffer),
+                    'random%': f'{last_rand_prob*100:.1f}%',
+                    'royalties': f'{total_royalties} ({royalty_rate:.2f}%)',
+                    'lr': f'{current_lr:.2e}',
+                    'pending': len(pending_futures)
+                })
                 
                 continue
             
