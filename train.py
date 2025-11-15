@@ -501,10 +501,11 @@ class SelfPlayTrainer:
             # Add to buffer
             self.add_to_buffer(episode_data)
             
-            # OPTIMIZATION: Batch training - train frequently to keep GPU busy
+            # OPTIMIZATION: Train continuously to keep GPU at 100%
+            # Train on EVERY network episode if buffer has data
             if len(self.replay_buffer) >= self.batch_size:
-                # Train 2-4 times per episode to keep GPU utilized
-                num_train_steps = 4 if len(self.replay_buffer) >= self.batch_size * 2 else 2
+                # Train multiple times to saturate GPU
+                num_train_steps = 8 if len(self.replay_buffer) >= self.batch_size * 2 else 4
                 for _ in range(num_train_steps):
                     loss = self.train_step()
                     losses.append(loss)
