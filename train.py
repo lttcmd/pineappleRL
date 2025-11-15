@@ -439,7 +439,7 @@ class SelfPlayTrainer:
                         checkpoint_path = f'value_net_checkpoint_ep{ep_num}.pth'
                         torch.save(self.model.state_dict(), checkpoint_path)
                         print(f"\nCheckpoint saved: {checkpoint_path}\n")
-            
+                
                 # OPTIMIZATION: Train continuously to keep GPU at 100%
                 # Train on EVERY iteration if buffer has data - this keeps GPU busy
                 if len(self.replay_buffer) >= self.batch_size:
@@ -448,30 +448,45 @@ class SelfPlayTrainer:
                     for _ in range(num_train_steps):
                         loss = self.train_step()
                         losses.append(loss)
-            
-            # Update progress bar - simple display with only essential info
-            with futures_lock:
-                last_rand_prob = list(pending_futures.values())[-1][1] if pending_futures else random_prob
-            
-            # Simple progress bar with only hands, rate, and random%
-            pbar.set_postfix({
-                'random%': f'{last_rand_prob*100:.1f}%'
-            }, refresh=False)
-            
-            # If using random, just continue - background thread handles it
-            if use_random:
-                continue
-            
-            # Generate episode using network (sequential, needs model access)
-            # Also process any pending async results while we're here
-            completed_futures = [f for f in pending_futures.keys() if f.ready()]
-            for future in completed_futures:
-                ep_num, rand_prob = pending_futures.pop(future)
-                try:
-                    episode_data = future.get(timeout=0.1)
-                except:
+                
+                # Update progress bar - simple display with only essential info
+                with futures_lock:
+                    last_rand_prob = list(pending_futures.values())[-1][1] if pending_futures else random_prob
+                
+                # Simple progress bar with only hands, rate, and random%
+                pbar.set_postfix({
+                    'random%': f'{last_rand_prob*100:.1f}%'
+                }, refresh=False)
+                
+                # If using random, just continue - background thread handles it
+                if use_random:
                     continue
                 
+                # Generate episode using network (sequential, needs model access)
+                # Also process any pending async results while we're here
+                completed_futures = [f for f in pending_futures.keys() if f.ready()]
+                for future in completed_futures:
+                    ep_num, rand_prob = pending_futures.pop(future)
+                    try:
+                        episode_data = future.get(timeout=0.1)
+                    except:
+                        continue
+                    
+                    if episode_data:
+                        final_score = episode_data[-1][1]
+                        total_score += final_score
+                        if final_score > 0:
+                            total_royalties += 1
+                            royalty_scores.append(final_score)
+                        elif final_score < 0:
+                            total_fouls += 1
+                        else:
+                            total_zero += 1
+                    self.add_to_buffer(episode_data)
+                
+                episode_data = self.generate_episode(use_random=use_random, env_idx=absolute_episode)
+                
+                # Track statistics
                 if episode_data:
                     final_score = episode_data[-1][1]
                     total_score += final_score
@@ -482,66 +497,51 @@ class SelfPlayTrainer:
                         total_fouls += 1
                     else:
                         total_zero += 1
+                
+                # Add to buffer
                 self.add_to_buffer(episode_data)
-            
-            episode_data = self.generate_episode(use_random=use_random, env_idx=absolute_episode)
-            
-            # Track statistics
-            if episode_data:
-                final_score = episode_data[-1][1]
-                total_score += final_score
-                if final_score > 0:
-                    total_royalties += 1
-                    royalty_scores.append(final_score)
-                elif final_score < 0:
-                    total_fouls += 1
-                else:
-                    total_zero += 1
-            
-            # Add to buffer
-            self.add_to_buffer(episode_data)
-            
-            # Update progress bar to reflect actual processed episodes
-            processed_episodes += 1
-            pbar.n = processed_episodes
-            pbar.refresh()
-            
-            # OPTIMIZATION: Train continuously to keep GPU at 100%
-            # Train on EVERY network episode if buffer has data
-            if len(self.replay_buffer) >= self.batch_size:
-                # Train many times to saturate GPU - increase for H200
-                num_train_steps = 16 if len(self.replay_buffer) >= self.batch_size * 2 else 8
-                for _ in range(num_train_steps):
-                    loss = self.train_step()
-                    losses.append(loss)
                 
-                # Learning rate scheduling: reduce LR as training progresses
-                if use_lr_schedule and absolute_episode > 0 and absolute_episode % 10000 == 0:
-                    # Reduce LR by 10% every 10k episodes (helps fine-tune after initial learning)
-                    new_lr = self.initial_lr * (0.9 ** (absolute_episode // 10000))
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] = new_lr
-            
-            # Periodic evaluation and checkpointing
-            if absolute_episode > 0 and absolute_episode % eval_frequency == 0:
-                # Clear progress bar and print clean evaluation
-                pbar.clear()
-                print(f"\n--- Evaluation at episode {absolute_episode:,} ---\n")
-                # Pass training stats to evaluation
-                # Calculate stats based on hands since start of this training session
-                hands_this_session = absolute_episode - start_episode + 1
-                training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
-                avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
-                self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
-                              total_royalties=total_royalties, total_zero=total_zero,
-                              training_foul_rate=training_foul_rate,
-                              avg_score_per_hand=avg_score_per_hand,
-                              start_episode=start_episode, current_episode=absolute_episode)
+                # Update progress bar to reflect actual processed episodes
+                processed_episodes += 1
+                pbar.n = processed_episodes
+                pbar.refresh()
                 
-                # Save checkpoint
-                checkpoint_path = f'value_net_checkpoint_ep{absolute_episode}.pth'
-                torch.save(self.model.state_dict(), checkpoint_path)
-                print(f"\nCheckpoint saved: {checkpoint_path}\n")
+                # OPTIMIZATION: Train continuously to keep GPU at 100%
+                # Train on EVERY network episode if buffer has data
+                if len(self.replay_buffer) >= self.batch_size:
+                    # Train many times to saturate GPU - increase for H200
+                    num_train_steps = 16 if len(self.replay_buffer) >= self.batch_size * 2 else 8
+                    for _ in range(num_train_steps):
+                        loss = self.train_step()
+                        losses.append(loss)
+                    
+                    # Learning rate scheduling: reduce LR as training progresses
+                    if use_lr_schedule and absolute_episode > 0 and absolute_episode % 10000 == 0:
+                        # Reduce LR by 10% every 10k episodes (helps fine-tune after initial learning)
+                        new_lr = self.initial_lr * (0.9 ** (absolute_episode // 10000))
+                        for param_group in self.optimizer.param_groups:
+                            param_group['lr'] = new_lr
+                
+                # Periodic evaluation and checkpointing
+                if absolute_episode > 0 and absolute_episode % eval_frequency == 0:
+                    # Clear progress bar and print clean evaluation
+                    pbar.clear()
+                    print(f"\n--- Evaluation at episode {absolute_episode:,} ---\n")
+                    # Pass training stats to evaluation
+                    # Calculate stats based on hands since start of this training session
+                    hands_this_session = absolute_episode - start_episode + 1
+                    training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
+                    avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
+                    self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
+                                  total_royalties=total_royalties, total_zero=total_zero,
+                                  training_foul_rate=training_foul_rate,
+                                  avg_score_per_hand=avg_score_per_hand,
+                                  start_episode=start_episode, current_episode=absolute_episode)
+                    
+                    # Save checkpoint
+                    checkpoint_path = f'value_net_checkpoint_ep{absolute_episode}.pth'
+                    torch.save(self.model.state_dict(), checkpoint_path)
+                    print(f"\nCheckpoint saved: {checkpoint_path}\n")
         
         except KeyboardInterrupt:
             print("\n\n" + "="*60)
