@@ -420,27 +420,22 @@ class SelfPlayTrainer:
             while processed_episodes < num_episodes:
                 # OPTIMIZATION: Process ALL completed futures in batch for maximum throughput
                 # This is the main data pipeline - process as fast as possible
-                # First, check which futures are ready WITHOUT holding the lock
-                # This reduces lock contention significantly
+                # Check for completed futures and process them in one lock acquisition
+                completed_with_metadata = []
                 with futures_lock:
-                    all_futures = list(pending_futures.keys())
-                
-                # Check readiness outside the lock (this is safe - ready() doesn't modify state)
-                completed = [f for f in all_futures if f.ready()]
+                    # Get all futures and check which are ready
+                    # We do this in one pass to minimize lock time
+                    futures_to_check = list(pending_futures.items())
+                    for future, (ep_num, rand_prob) in futures_to_check:
+                        if future.ready():
+                            completed_with_metadata.append((future, ep_num, rand_prob))
+                            # Remove from dict immediately
+                            del pending_futures[future]
                 
                 # If no completed futures, sleep very briefly to prevent busy-wait
-                # But keep it minimal - we want to process as fast as possible
-                if not completed:
+                if not completed_with_metadata:
                     time.sleep(0.0001)  # Very small sleep - just enough to prevent 100% spin
                     continue
-                
-                # Now acquire lock to remove completed futures and get their metadata
-                with futures_lock:
-                    completed_with_metadata = []
-                    for future in completed:
-                        if future in pending_futures:
-                            ep_num, rand_prob = pending_futures.pop(future)
-                            completed_with_metadata.append((future, ep_num, rand_prob))
                 
                 # Process all completed futures in batch (outside the lock)
                 batch_data = []
