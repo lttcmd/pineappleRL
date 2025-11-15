@@ -331,9 +331,10 @@ class SelfPlayTrainer:
         pbar = tqdm(range(start_episode, num_episodes), desc="Training", unit="hand", initial=start_episode, total=num_episodes)
         
         # OPTIMIZATION: Batch random episodes for multiprocessing
-        # For H200 with 24 cores, batch episodes to match worker count for immediate processing
+        # For H200 with 24 cores, process batches immediately to keep all cores busy
         episodes_per_batch = self.num_workers  # Process immediately with all workers
         episode_batch = []
+        last_batch_time = time.time()
         
         for episode_idx, episode in enumerate(pbar):
             absolute_episode = episode
@@ -344,8 +345,13 @@ class SelfPlayTrainer:
             if use_random:
                 episode_batch.append((absolute_episode, use_random, random_prob))
                 
-                # Process batch when full or at end (or immediately if we have workers available)
-                if len(episode_batch) >= episodes_per_batch or episode_idx == len(pbar) - 1:
+                # Process batch when full, or after timeout (0.1s) to avoid waiting
+                current_time = time.time()
+                should_process = (len(episode_batch) >= episodes_per_batch or 
+                                 episode_idx == len(pbar) - 1 or
+                                 (len(episode_batch) > 0 and current_time - last_batch_time > 0.1))
+                
+                if should_process:
                     # Generate episodes in parallel using multiprocessing
                     # Pool should already be created in __init__, but check just in case
                     if self.process_pool is None:
@@ -395,9 +401,9 @@ class SelfPlayTrainer:
                     
                     # Update progress bar (use last episode in batch)
                     last_ep, _, last_rand_prob = episode_batch[-1]
-                    # OPTIMIZATION: Batch training - train multiple times per batch for maximum GPU utilization (H200)
+                    # OPTIMIZATION: Batch training - train multiple times per batch to keep GPU busy
                     if len(self.replay_buffer) >= self.batch_size:
-                        num_train_steps = 16 if len(self.replay_buffer) >= self.batch_size * 2 else 8
+                        num_train_steps = 8 if len(self.replay_buffer) >= self.batch_size * 2 else 4
                         for _ in range(num_train_steps):
                             loss = self.train_step()
                             losses.append(loss)
@@ -414,6 +420,7 @@ class SelfPlayTrainer:
                         })
                     
                     episode_batch = []
+                    last_batch_time = time.time()
                 continue
             
             # Generate episode using network (sequential, needs model access)
@@ -434,11 +441,10 @@ class SelfPlayTrainer:
             # Add to buffer
             self.add_to_buffer(episode_data)
             
-            # OPTIMIZATION: Batch training - train less frequently but with more gradient steps
-            # This amortizes training overhead and improves GPU utilization
+            # OPTIMIZATION: Batch training - train frequently to keep GPU busy
             if len(self.replay_buffer) >= self.batch_size:
-                # Train multiple times per episode for maximum GPU utilization (H200)
-                num_train_steps = 8 if len(self.replay_buffer) >= self.batch_size * 2 else 4
+                # Train 2-4 times per episode to keep GPU utilized
+                num_train_steps = 4 if len(self.replay_buffer) >= self.batch_size * 2 else 2
                 for _ in range(num_train_steps):
                     loss = self.train_step()
                     losses.append(loss)
@@ -593,11 +599,11 @@ def main():
     model = ValueNet(input_dim, hidden_dim=1024, dropout=0.1)  # 1024 hidden units for H200 power
     
     # Initialize trainer (will auto-detect CUDA)
-    # OPTIMIZED for H200: Maximum batch size and buffer for full GPU utilization
+    # OPTIMIZED for H200: Balanced batch size for frequent training and GPU utilization
     trainer = SelfPlayTrainer(
         model=model,
-        buffer_size=2000000,  # 2M buffer for H200 - maximum diverse data
-        batch_size=2048,  # Large batch size for H200 (was 512) - saturate GPU
+        buffer_size=1000000,  # 1M buffer for H200 - good diverse data
+        batch_size=512,  # Balanced batch size for H200 - frequent training, good GPU usage
         learning_rate=1e-3,
         use_cuda=True  # Will use CUDA if available
     )
