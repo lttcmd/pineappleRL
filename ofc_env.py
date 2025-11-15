@@ -139,47 +139,21 @@ class OfcEnv:
     def _is_valid_placement(self, state: State, placements: List[Tuple[int, int]], 
                            keep_indices: Optional[Tuple[int, int]] = None) -> bool:
         """
-        Check if a placement is valid (respects bottom > middle > top constraint).
-        Uses proper poker hand ranking validation.
+        Check if a placement is valid.
+        During play: Only checks basic slot validity (no constraint checking)
+        Validation of bottom > middle > top happens only at final scoring.
         """
-        # Basic slot validation
+        # Basic slot validation only
         for card_idx, slot_idx in placements:
             if slot_idx < 0 or slot_idx >= 13:
                 return False
             if state.board[slot_idx] is not None:
                 return False
         
-        # Create a temporary board to check validation
-        temp_board = state.board.copy()
-        
-        # Apply placements to temp board
-        if state.round == 0:
-            # Place all 5 cards
-            for card_idx, slot_idx in placements:
-                temp_board[slot_idx] = state.current_draw[card_idx]
-        else:
-            # Place 2 of 3 cards
-            if keep_indices is None:
-                keep_indices = (0, 1)  # Default
-            kept_cards = [state.current_draw[i] for i in keep_indices]
-            for keep_idx, slot_idx in placements:
-                if keep_idx < len(kept_cards):
-                    temp_board[slot_idx] = kept_cards[keep_idx]
-        
-        # Extract rows
-        bottom = [c for c in temp_board[0:5] if c is not None]
-        middle = [c for c in temp_board[5:10] if c is not None]
-        top = [c for c in temp_board[10:13] if c is not None]
-        
-        # Only validate if rows are complete enough to check
-        # For partial boards, we'll be lenient
-        if len(bottom) == 5 and len(middle) == 5 and len(top) == 3:
-            is_valid, _ = validate_board(bottom, middle, top)
-            return is_valid
-        
-        # For incomplete boards, just check basic constraints
-        # Don't allow placing high cards in bottom if middle/top already have strong hands
-        # This is a simplified check - full validation happens at completion
+        # During play, allow any placement that fits in empty slots
+        # Full validation (bottom > middle > top) only happens at scoring time
+        # This allows games to complete even if the final board will be fouled
+        # The model learns from both fouled and non-fouled outcomes
         return True
     
     def step(self, state: State, action: Action) -> Tuple[State, float, bool]:

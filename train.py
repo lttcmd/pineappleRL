@@ -67,15 +67,17 @@ class SelfPlayTrainer:
         episode_states = []
         
         while True:
-            # Save current state
-            episode_states.append(state)
-            
             # Get legal actions
             legal_actions = env.legal_actions(state)
             
             if not legal_actions:
                 # No legal actions, end episode
+                # Save final state before breaking
+                episode_states.append(state)
                 break
+            
+            # Save current state BEFORE stepping
+            episode_states.append(state)
             
             # Choose action
             if use_random:
@@ -88,9 +90,11 @@ class SelfPlayTrainer:
             state, reward, done = env.step(state, action)
             
             if done:
+                # Save final state after last step
+                episode_states.append(state)
                 break
         
-        # Compute final score
+        # Compute final score (use the final state)
         final_score = env.score(state)
         
         # Debug: Check if board is complete
@@ -207,6 +211,11 @@ class SelfPlayTrainer:
         
         start_time = time.time()
         losses = []
+        total_royalties = 0
+        total_fouls = 0
+        total_zero = 0
+        royalty_scores = []
+        total_score = 0.0  # Track total score for average calculation
         
         # Progress bar for episodes
         pbar = tqdm(range(num_episodes), desc="Training", unit="hand")
@@ -220,6 +229,18 @@ class SelfPlayTrainer:
             # Generate episode (using round-robin across parallel envs)
             episode_data = self.generate_episode(use_random=use_random, env_idx=episode)
             
+            # Track statistics
+            if episode_data:
+                final_score = episode_data[-1][1]
+                total_score += final_score  # Add to total for average
+                if final_score > 0:
+                    total_royalties += 1
+                    royalty_scores.append(final_score)
+                elif final_score < 0:
+                    total_fouls += 1
+                else:
+                    total_zero += 1
+            
             # Add to buffer
             self.add_to_buffer(episode_data)
             
@@ -230,16 +251,29 @@ class SelfPlayTrainer:
                 
                 # Update progress bar
                 avg_loss = np.mean(losses[-100:]) if losses else 0.0
+                royalty_rate = (total_royalties / (episode + 1)) * 100 if episode > 0 else 0
                 pbar.set_postfix({
                     'loss': f'{avg_loss:.4f}',
                     'buffer': len(self.replay_buffer),
-                    'random%': f'{random_prob*100:.1f}%'
+                    'random%': f'{random_prob*100:.1f}%',
+                    'royalties': f'{total_royalties} ({royalty_rate:.2f}%)'
                 })
             
             # Periodic evaluation and checkpointing
             if episode > 0 and episode % eval_frequency == 0:
                 pbar.write(f"\n--- Evaluation at episode {episode:,} ---")
-                self._evaluate()
+                pbar.write(f"  Training: {total_royalties} royalties ({royalty_rate:.2f}%), "
+                          f"{total_fouls} fouls, {total_zero} zero")
+                if royalty_scores:
+                    pbar.write(f"  Avg royalty: {np.mean(royalty_scores):.2f} "
+                              f"(range: {min(royalty_scores):.0f}-{max(royalty_scores):.0f})")
+                # Pass training stats to evaluation
+                training_foul_rate = (total_fouls / (episode + 1)) * 100 if episode > 0 else 0
+                avg_score_per_hand = total_score / (episode + 1) if episode > 0 else 0.0
+                self._evaluate(total_episodes=episode+1, total_fouls=total_fouls, 
+                              total_royalties=total_royalties, total_zero=total_zero,
+                              training_foul_rate=training_foul_rate,
+                              avg_score_per_hand=avg_score_per_hand)
                 
                 # Save checkpoint
                 checkpoint_path = f'value_net_checkpoint_ep{episode}.pth'
@@ -258,9 +292,17 @@ class SelfPlayTrainer:
         print(f"Average time per episode: {elapsed/num_episodes*1000:.2f} ms")
         print(f"{'='*60}\n")
         
-        self._evaluate()
+        # Final evaluation with training stats
+        training_foul_rate = (total_fouls / num_episodes) * 100 if num_episodes > 0 else 0
+        avg_score_per_hand = total_score / num_episodes if num_episodes > 0 else 0.0
+        self._evaluate(total_episodes=num_episodes, total_fouls=total_fouls,
+                      total_royalties=total_royalties, total_zero=total_zero,
+                      training_foul_rate=training_foul_rate,
+                      avg_score_per_hand=avg_score_per_hand)
     
-    def _evaluate(self):
+    def _evaluate(self, total_episodes: int = 0, total_fouls: int = 0, 
+                  total_royalties: int = 0, total_zero: int = 0, 
+                  training_foul_rate: float = 0.0, avg_score_per_hand: float = 0.0):
         """Evaluate model on test episodes."""
         self.model.eval()
         test_scores = []
@@ -300,11 +342,29 @@ class SelfPlayTrainer:
             min_score = np.min(test_scores)
             foul_rate = test_fouls / len(test_scores) * 100
             
-            print(f"  Evaluation (50 hands):")
+            if total_episodes > 0:
+                print(f"  Training Statistics:")
+                print(f"    Total Hands: {total_episodes:,}")
+                print(f"    Hands Fouled: {total_fouls:,}/{total_episodes:,} ({training_foul_rate:.1f}%)")
+                print(f"    Hands Scored 0: {total_zero:,}/{total_episodes:,} ({total_zero/total_episodes*100:.1f}%)")
+                print(f"    Hands with Royalties: {total_royalties:,}/{total_episodes:,} ({total_royalties/total_episodes*100:.2f}%)")
+                print(f"    Average Score Per Hand: {avg_score_per_hand:.2f}")
+            
+            print(f"\n  {'='*60}")
+            print(f"  Evaluation (50 test hands):")
             print(f"    Avg score: {avg_score:.2f} ± {std_score:.2f}")
+            print(f"      (Average = mean of all scores, ± = standard deviation)")
             print(f"    Range: [{min_score:.1f}, {max_score:.1f}]")
-            print(f"    Foul rate: {foul_rate:.1f}%")
-            print(f"    Complete boards: {complete_boards}, Incomplete: {incomplete_boards}")
+            print(f"      (Range = [minimum, maximum] scores observed)")
+            print(f"    Foul rate: {foul_rate:.1f}% ({test_fouls}/{len(test_scores)} hands fouled)")
+            print(f"      (Note: This is from 50 evaluation hands only)")
+            print(f"    Board completion: {complete_boards}/{len(test_scores)} complete, {incomplete_boards} incomplete")
+            
+            # Show score distribution
+            positive_scores = sum(1 for s in test_scores if s > 0)
+            zero_scores = sum(1 for s in test_scores if s == 0)
+            negative_scores = sum(1 for s in test_scores if s < 0)
+            print(f"    Score breakdown: {positive_scores} positive, {zero_scores} zero, {negative_scores} negative")
         
         self.model.train()
 

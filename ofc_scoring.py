@@ -384,18 +384,27 @@ def total_royalties(bottom: List[Card], middle: List[Card], top: List[Card]) -> 
 def score_board(bottom: List[Card], middle: List[Card], top: List[Card]) -> Tuple[float, bool]:
     """
     Score a complete board.
+    
+    Scoring rules:
+    - If fouled (bottom <= middle or middle <= top): -6 points
+    - If not fouled: royalties only (0 if no special hands, positive if royalties exist)
+    
+    Note: ROW_WIN (+1 per row won) and SCOOP_BONUS (+3) are for multiplayer pairwise
+    comparison only. In single-player training, we use royalties only.
+    
     Returns: (score, is_fouled)
     """
     is_valid, reason = validate_board(bottom, middle, top)
     
     if not is_valid:
+        # Fouled: -6 point penalty
         return -FOUL_PENALTY, True
     
-    # Calculate royalties
+    # Not fouled: Calculate royalties
+    # Royalties can be 0 (no special hands) or positive (pairs, trips, straights, etc.)
     royalties = total_royalties(bottom, middle, top)
     
-    # Base score is royalties
-    # In single-player mode, we just use royalties
-    # In multiplayer, we'd add pairwise comparison scores
+    # In single-player mode: score = royalties (no base points)
+    # In multiplayer: would add +1 per row won +3 for scoop
     return float(royalties), False
 
