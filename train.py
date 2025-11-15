@@ -369,8 +369,11 @@ class SelfPlayTrainer:
         producer.start()
         print(f"Started background producer thread to keep {max_pending} episodes queued")
         
-        for episode_idx, episode in enumerate(pbar):
-            absolute_episode = episode
+        # Main training loop - iterate until we've processed all episodes
+        # We use a while loop instead of for loop to properly track processed episodes
+        while processed_episodes < num_episodes:
+            # Calculate which episode we're "on" based on processed count
+            absolute_episode = processed_episodes
             random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
             use_random = random.random() < random_prob
             
@@ -497,6 +500,11 @@ class SelfPlayTrainer:
             # Add to buffer
             self.add_to_buffer(episode_data)
             
+            # Update progress bar to reflect actual processed episodes
+            processed_episodes += 1
+            pbar.n = processed_episodes
+            pbar.refresh()
+            
             # OPTIMIZATION: Train continuously to keep GPU at 100%
             # Train on EVERY network episode if buffer has data
             if len(self.replay_buffer) >= self.batch_size:
@@ -512,18 +520,6 @@ class SelfPlayTrainer:
                     new_lr = self.initial_lr * (0.9 ** (absolute_episode // 10000))
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] = new_lr
-                
-                # Update progress bar with fixed-width formatting
-                avg_loss = np.mean(losses[-100:]) if losses else 0.0
-                royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0.0
-                current_lr = self.optimizer.param_groups[0]['lr']
-                pbar.set_postfix({
-                    'loss': f'{avg_loss:.4f}',
-                    'buffer': f'{len(self.replay_buffer):>6,}',
-                    'random%': f'{random_prob*100:>5.1f}%',
-                    'royalties': f'{total_royalties:>5,} ({royalty_rate:>5.2f}%)',
-                    'lr': f'{current_lr:.2e}'
-                }, refresh=False)
             
             # Periodic evaluation and checkpointing
             if absolute_episode > 0 and absolute_episode % eval_frequency == 0:
