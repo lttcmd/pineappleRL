@@ -261,12 +261,7 @@ class SelfPlayTrainer:
             
             # Periodic evaluation and checkpointing
             if episode > 0 and episode % eval_frequency == 0:
-                pbar.write(f"\n--- Evaluation at episode {episode:,} ---")
-                pbar.write(f"  Training: {total_royalties} royalties ({royalty_rate:.2f}%), "
-                          f"{total_fouls} fouls, {total_zero} zero")
-                if royalty_scores:
-                    pbar.write(f"  Avg royalty: {np.mean(royalty_scores):.2f} "
-                              f"(range: {min(royalty_scores):.0f}-{max(royalty_scores):.0f})")
+                pbar.write(f"\n--- Evaluation at episode {episode:,} ---\n")
                 # Pass training stats to evaluation
                 training_foul_rate = (total_fouls / (episode + 1)) * 100 if episode > 0 else 0
                 avg_score_per_hand = total_score / (episode + 1) if episode > 0 else 0.0
@@ -278,7 +273,7 @@ class SelfPlayTrainer:
                 # Save checkpoint
                 checkpoint_path = f'value_net_checkpoint_ep{episode}.pth'
                 torch.save(self.model.state_dict(), checkpoint_path)
-                pbar.write(f"Checkpoint saved: {checkpoint_path}")
+                pbar.write(f"\nCheckpoint saved: {checkpoint_path}\n")
         
         pbar.close()
         
@@ -343,28 +338,28 @@ class SelfPlayTrainer:
             foul_rate = test_fouls / len(test_scores) * 100
             
             if total_episodes > 0:
-                print(f"  Training Statistics:")
+                print(f"{'='*23}")
+                print(f"Training Statistics:")
                 print(f"    Total Hands: {total_episodes:,}")
                 print(f"    Hands Fouled: {total_fouls:,}/{total_episodes:,} ({training_foul_rate:.1f}%)")
                 print(f"    Hands Scored 0: {total_zero:,}/{total_episodes:,} ({total_zero/total_episodes*100:.1f}%)")
                 print(f"    Hands with Royalties: {total_royalties:,}/{total_episodes:,} ({total_royalties/total_episodes*100:.2f}%)")
                 print(f"    Average Score Per Hand: {avg_score_per_hand:.2f}")
+                print()
             
-            print(f"\n  {'='*60}")
-            print(f"  Evaluation (50 test hands):")
-            print(f"    Avg score: {avg_score:.2f} ± {std_score:.2f}")
-            print(f"      (Average = mean of all scores, ± = standard deviation)")
-            print(f"    Range: [{min_score:.1f}, {max_score:.1f}]")
-            print(f"      (Range = [minimum, maximum] scores observed)")
-            print(f"    Foul rate: {foul_rate:.1f}% ({test_fouls}/{len(test_scores)} hands fouled)")
-            print(f"      (Note: This is from 50 evaluation hands only)")
-            print(f"    Board completion: {complete_boards}/{len(test_scores)} complete, {incomplete_boards} incomplete")
+            print(f"{'='*23}")
+            print(f"Evaluation Statistics: (50 test hands)")
+            print(f"  Avg score: {avg_score:.2f} ± {std_score:.2f}")
+            print(f"  Range: [{min_score:.1f}, {max_score:.1f}]")
+            print(f"  Foul rate: {foul_rate:.1f}%")
+            print(f"  Board completion: {complete_boards}/{len(test_scores)} complete, {incomplete_boards} incomplete")
             
             # Show score distribution
             positive_scores = sum(1 for s in test_scores if s > 0)
             zero_scores = sum(1 for s in test_scores if s == 0)
             negative_scores = sum(1 for s in test_scores if s < 0)
-            print(f"    Score breakdown: {positive_scores} positive, {zero_scores} zero, {negative_scores} negative")
+            print(f"  Score breakdown: {positive_scores} positive, {zero_scores} zero, {negative_scores} negative")
+            print()
         
         self.model.train()
 
