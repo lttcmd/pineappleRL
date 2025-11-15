@@ -350,6 +350,7 @@ class SelfPlayTrainer:
         def producer_thread():
             """Continuously submit random episodes to keep all workers busy."""
             episode_num = start_episode
+            submission_count = 0
             while not stop_producer.is_set() and episode_num < num_episodes:
                 # Always submit work - don't wait for main loop
                 with futures_lock:
@@ -374,12 +375,35 @@ class SelfPlayTrainer:
                     with futures_lock:
                         for future, ep_num, rand_prob in new_futures:
                             pending_futures[future] = (ep_num, rand_prob)
-                # NO SLEEP - keep submitting continuously to maintain full queue
+                    
+                    submission_count += len(new_futures)
+                    if submission_count % 500 == 0:
+                        print(f"[Producer] Submitted {submission_count:,} episodes, queue size: {len(pending_futures)}")
+                else:
+                    # Queue is full - tiny sleep to prevent 100% CPU spin
+                    # This allows main loop to process work and free up queue space
+                    time.sleep(0.0001)
         
         # Start background producer thread
         producer = threading.Thread(target=producer_thread, daemon=True)
         producer.start()
         print(f"Started background producer thread to keep {max_pending} episodes queued")
+        
+        # Pre-fill work queue to prevent race condition and ensure workers have work immediately
+        print("Pre-filling work queue with initial batch...")
+        initial_batch_size = min(200, max_pending // 2)  # Pre-fill with 200 episodes or half of max_pending
+        pre_filled_futures = []
+        for i in range(initial_batch_size):
+            seed = abs(hash(f"{start_episode + i}_{time.time()}_{threading.current_thread().ident}"))
+            future = self.process_pool.apply_async(generate_random_episode_worker, (seed,))
+            random_prob = max(0.0, 1.0 - ((start_episode + i) / (num_episodes * 0.8)))
+            pre_filled_futures.append((future, start_episode + i, random_prob))
+        
+        with futures_lock:
+            for future, ep_num, rand_prob in pre_filled_futures:
+                pending_futures[future] = (ep_num, rand_prob)
+        
+        print(f"Pre-filled queue with {initial_batch_size} episodes. Starting main training loop...")
         
         # Main training loop - iterate until we've processed all episodes
         # We use a while loop instead of for loop to properly track processed episodes
@@ -390,17 +414,30 @@ class SelfPlayTrainer:
             while processed_episodes < num_episodes:
                 # OPTIMIZATION: Process ALL completed futures in batch for maximum throughput
                 # This is the main data pipeline - process as fast as possible
+                # First, check which futures are ready WITHOUT holding the lock
+                # This reduces lock contention significantly
                 with futures_lock:
-                    completed = [f for f in pending_futures.keys() if f.ready()]
+                    all_futures = list(pending_futures.keys())
                 
-                # Process all completed futures in batch
+                # Check readiness outside the lock (this is safe - ready() doesn't modify state)
+                completed = [f for f in all_futures if f.ready()]
+                
+                # If no completed futures, sleep briefly to prevent busy-wait
+                if not completed:
+                    time.sleep(0.001)  # Small sleep prevents 100% CPU spin
+                    continue
+                
+                # Now acquire lock to remove completed futures and get their metadata
+                with futures_lock:
+                    completed_with_metadata = []
+                    for future in completed:
+                        if future in pending_futures:
+                            ep_num, rand_prob = pending_futures.pop(future)
+                            completed_with_metadata.append((future, ep_num, rand_prob))
+                
+                # Process all completed futures in batch (outside the lock)
                 batch_data = []
-                for future in completed:
-                    with futures_lock:
-                        if future not in pending_futures:
-                            continue
-                        ep_num, rand_prob = pending_futures.pop(future)
-                    
+                for future, ep_num, rand_prob in completed_with_metadata:
                     try:
                         episode_data = future.get(timeout=0.01)  # Very short timeout
                         if episode_data:
@@ -461,13 +498,20 @@ class SelfPlayTrainer:
                     random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
                     
                     with futures_lock:
+                        queue_size = len(pending_futures)
                         last_rand_prob = list(pending_futures.values())[-1][1] if pending_futures else random_prob
                     
                     pbar.n = processed_episodes
                     pbar.set_postfix({
-                        'random%': f'{last_rand_prob*100:.1f}%'
+                        'random%': f'{last_rand_prob*100:.1f}%',
+                        'queue': f'{queue_size}'
                     }, refresh=False)
                     last_progress_update = current_time
+                    
+                    # Periodic debug output every 5 seconds
+                    if current_time - last_debug_output >= debug_output_interval:
+                        print(f"\n[Debug] Processed: {processed_episodes:,}, Queue: {queue_size}, Buffer: {len(self.replay_buffer):,}")
+                        last_debug_output = current_time
         
         except KeyboardInterrupt:
             print("\n\n" + "="*60)
