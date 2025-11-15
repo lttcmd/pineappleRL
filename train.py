@@ -409,7 +409,9 @@ class SelfPlayTrainer:
         # We use a while loop instead of for loop to properly track processed episodes
         try:
             last_progress_update = time.time()
+            last_debug_output = time.time()
             progress_update_interval = 0.1  # Update progress bar every 100ms
+            debug_output_interval = 5.0  # Debug output every 5 seconds
             
             while processed_episodes < num_episodes:
                 # OPTIMIZATION: Process ALL completed futures in batch for maximum throughput
