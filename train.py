@@ -133,7 +133,7 @@ class SelfPlayTrainer:
             all_data.extend(episode_data)
         return all_data
     
-    def _choose_action_with_net(self, state: State, legal_actions: List[Action], env_idx: int = 0, max_actions: int = 50) -> Action:
+    def _choose_action_with_net(self, state: State, legal_actions: List[Action], env_idx: int = 0, max_actions: int = 30) -> Action:
         """
         Choose action using value network (greedy) - batched for GPU efficiency.
         Optimized: Only evaluates top N actions to reduce CPU bottleneck.
@@ -328,7 +328,8 @@ class SelfPlayTrainer:
         pbar = tqdm(range(start_episode, num_episodes), desc="Training", unit="hand", initial=start_episode, total=num_episodes)
         
         # OPTIMIZATION: Batch random episodes for multiprocessing
-        episodes_per_batch = self.num_workers  # Generate multiple random episodes in parallel
+        # For H200 with 24 cores, batch more episodes for better throughput
+        episodes_per_batch = max(self.num_workers * 2, 32)  # Batch 2x workers or min 32 episodes
         episode_batch = []
         
         for episode_idx, episode in enumerate(pbar):
@@ -390,17 +391,22 @@ class SelfPlayTrainer:
                     
                     # Update progress bar (use last episode in batch)
                     last_ep, _, last_rand_prob = episode_batch[-1]
+                    # OPTIMIZATION: Batch training - train multiple times per batch for better GPU utilization
                     if len(self.replay_buffer) >= self.batch_size:
-                        loss = self.train_step()
-                        losses.append(loss)
+                        num_train_steps = 4 if len(self.replay_buffer) >= self.batch_size * 2 else 2
+                        for _ in range(num_train_steps):
+                            loss = self.train_step()
+                            losses.append(loss)
                         
                         avg_loss = np.mean(losses[-100:]) if losses else 0.0
                         royalty_rate = (total_royalties / (last_ep + 1)) * 100 if last_ep > 0 else 0
+                        current_lr = self.optimizer.param_groups[0]['lr']
                         pbar.set_postfix({
                             'loss': f'{avg_loss:.4f}',
                             'buffer': len(self.replay_buffer),
                             'random%': f'{last_rand_prob*100:.1f}%',
-                            'royalties': f'{total_royalties} ({royalty_rate:.2f}%)'
+                            'royalties': f'{total_royalties} ({royalty_rate:.2f}%)',
+                            'lr': f'{current_lr:.2e}'
                         })
                     
                     episode_batch = []
@@ -424,10 +430,14 @@ class SelfPlayTrainer:
             # Add to buffer
             self.add_to_buffer(episode_data)
             
-            # Train on batch
+            # OPTIMIZATION: Batch training - train less frequently but with more gradient steps
+            # This amortizes training overhead and improves GPU utilization
             if len(self.replay_buffer) >= self.batch_size:
-                loss = self.train_step()
-                losses.append(loss)
+                # Train multiple times per episode for better GPU utilization
+                num_train_steps = 2 if len(self.replay_buffer) >= self.batch_size * 2 else 1
+                for _ in range(num_train_steps):
+                    loss = self.train_step()
+                    losses.append(loss)
                 
                 # Learning rate scheduling: reduce LR as training progresses
                 if use_lr_schedule and absolute_episode > 0 and absolute_episode % 10000 == 0:
@@ -579,11 +589,11 @@ def main():
     model = ValueNet(input_dim, hidden_dim=512, dropout=0.1)  # 512 hidden units, 10% dropout
     
     # Initialize trainer (will auto-detect CUDA)
-    # OPTIMIZED for H200: Larger batch size and buffer for better GPU utilization
-    trainer = SelfPlayTrainer(
+    # OPTIMIZED for H200: M
+uch larger batch size and buffer for maximum GPU utilization    trainer = SelfPlayTrainer(
         model=model,
-        buffer_size=500000,  # Increased buffer for H200 (was 200k)
-        batch_size=256,  # Increased batch size for H200 (was 64) - better GPU utilization
+        buffer_size=1000000,  # Increased buffer for H200 (was 500k) - more diverse data
+        batch_size=512,  # Increased batch size for H200 (was 256) - better GPU utilization
         learning_rate=1e-3,
         use_cuda=True  # Will use CUDA if available
     )
