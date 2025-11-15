@@ -16,6 +16,7 @@ import glob
 import re
 from multiprocessing import Pool, Manager
 from functools import partial
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from ofc_env import OfcEnv, State, Action
 from state_encoding import encode_state, get_input_dim
@@ -330,44 +331,77 @@ class SelfPlayTrainer:
         # Progress bar for episodes (starting from resume point)
         pbar = tqdm(range(start_episode, num_episodes), desc="Training", unit="hand", initial=start_episode, total=num_episodes)
         
-        # OPTIMIZATION: Batch random episodes for multiprocessing
-        # For H200 with 24 cores, keep a large queue of work to ensure all cores stay busy
-        episodes_per_batch = self.num_workers * 3  # Process 3x workers worth (72 episodes) to keep queue full
-        episode_batch = []
-        last_batch_time = time.time()
+        # OPTIMIZATION: Use async queue to keep all CPU cores continuously busy
+        # Maintain a queue of pending async tasks to ensure workers never idle
+        pending_futures = {}  # {future: (episode_num, random_prob)}
+        max_pending = self.num_workers * 4  # Keep 4x workers worth of work queued (96 episodes)
         
         for episode_idx, episode in enumerate(pbar):
             absolute_episode = episode
             random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
             use_random = random.random() < random_prob
             
-            # OPTIMIZATION: Batch random episodes for parallel processing
+            # OPTIMIZATION: Use async processing to keep all cores busy
             if use_random:
-                episode_batch.append((absolute_episode, use_random, random_prob))
+                # Submit work immediately to keep queue full
+                seed = abs(hash(f"{absolute_episode}_{time.time()}"))
+                future = self.process_pool.apply_async(generate_random_episode_worker, (seed,))
+                pending_futures[future] = (absolute_episode, random_prob)
                 
-                # Process batch when full, or after timeout (0.05s) to avoid waiting
-                current_time = time.time()
-                should_process = (len(episode_batch) >= episodes_per_batch or 
-                                 episode_idx == len(pbar) - 1 or
-                                 (len(episode_batch) >= self.num_workers and current_time - last_batch_time > 0.05))
+                # Process completed futures to keep queue from growing too large
+                # This ensures we're always processing results while submitting new work
+                completed_futures = [f for f in pending_futures.keys() if f.ready()]
+                for future in completed_futures:
+                    ep_num, rand_prob = pending_futures.pop(future)
+                    try:
+                        episode_data = future.get(timeout=0.1)
+                    except:
+                        continue  # Skip if there was an error
+                    
+                    # Track statistics
+                    if episode_data:
+                        final_score = episode_data[-1][1]
+                        total_score += final_score
+                        if final_score > 0:
+                            total_royalties += 1
+                            royalty_scores.append(final_score)
+                        elif final_score < 0:
+                            total_fouls += 1
+                        else:
+                            total_zero += 1
+                    
+                    # Add to buffer
+                    self.add_to_buffer(episode_data)
+                    
+                    # Check for checkpoint
+                    if ep_num > 0 and ep_num % eval_frequency == 0:
+                        pbar.clear()
+                        print(f"\n--- Evaluation at episode {ep_num:,} ---\n")
+                        hands_this_session = ep_num - start_episode + 1
+                        training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
+                        avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
+                        self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
+                                      total_royalties=total_royalties, total_zero=total_zero,
+                                      training_foul_rate=training_foul_rate,
+                                      avg_score_per_hand=avg_score_per_hand,
+                                      start_episode=start_episode, current_episode=ep_num)
+                        checkpoint_path = f'value_net_checkpoint_ep{ep_num}.pth'
+                        torch.save(self.model.state_dict(), checkpoint_path)
+                        print(f"\nCheckpoint saved: {checkpoint_path}\n")
                 
-                if should_process:
-                    # Generate episodes in parallel using multiprocessing
-                    # Pool should already be created in __init__, but check just in case
-                    if self.process_pool is None:
-                        self.process_pool = Pool(processes=self.num_workers)
-                    
-                    # Generate all random episodes in parallel
-                    # Use unique seeds for each episode
-                    seeds = [abs(hash(f"{ep}_{time.time()}_{i}")) for i, (ep, _, _) in enumerate(episode_batch)]
-                    
-                    # Use map() - it should distribute work across all workers
-                    # The key is having enough work (72 episodes) so all 24 workers stay busy
-                    episode_results = self.process_pool.map(generate_random_episode_worker, seeds, chunksize=1)
-                    
-                    # Process results
-                    for (ep_num, _, rand_prob), episode_data in zip(episode_batch, episode_results):
-                        # Track statistics
+                # Limit queue size - if too many pending, wait for some to complete
+                while len(pending_futures) >= max_pending:
+                    # Wait for at least one to complete
+                    completed = [f for f in pending_futures.keys() if f.ready()]
+                    if completed:
+                        future = completed[0]
+                        ep_num, rand_prob = pending_futures.pop(future)
+                        try:
+                            episode_data = future.get(timeout=0.1)
+                        except:
+                            continue
+                        
+                        # Process result (same as above)
                         if episode_data:
                             final_score = episode_data[-1][1]
                             total_score += final_score
@@ -378,55 +412,55 @@ class SelfPlayTrainer:
                                 total_fouls += 1
                             else:
                                 total_zero += 1
-                        
-                        # Add to buffer
                         self.add_to_buffer(episode_data)
-                        
-                        # Check for checkpoint after each episode (even in batch)
-                        if ep_num > 0 and ep_num % eval_frequency == 0:
-                            # Clear progress bar and print clean evaluation
-                            pbar.clear()
-                            print(f"\n--- Evaluation at episode {ep_num:,} ---\n")
-                            # Calculate stats based on hands since start of this training session
-                            hands_this_session = ep_num - start_episode + 1
-                            training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
-                            avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
-                            self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
-                                          total_royalties=total_royalties, total_zero=total_zero,
-                                          training_foul_rate=training_foul_rate,
-                                          avg_score_per_hand=avg_score_per_hand,
-                                          start_episode=start_episode, current_episode=ep_num)
-                            
-                            # Save checkpoint
-                            checkpoint_path = f'value_net_checkpoint_ep{ep_num}.pth'
-                            torch.save(self.model.state_dict(), checkpoint_path)
-                            print(f"\nCheckpoint saved: {checkpoint_path}\n")
-                    
-                    # Update progress bar (use last episode in batch)
-                    last_ep, _, last_rand_prob = episode_batch[-1]
-                    # OPTIMIZATION: Batch training - train multiple times per batch to keep GPU busy
+                    else:
+                        time.sleep(0.001)  # Brief sleep if nothing ready
+                
+                # Update progress bar periodically
+                if len(pending_futures) > 0 and absolute_episode % 10 == 0:
+                    last_ep, last_rand_prob = list(pending_futures.values())[-1] if pending_futures else (absolute_episode, random_prob)
                     if len(self.replay_buffer) >= self.batch_size:
-                        num_train_steps = 8 if len(self.replay_buffer) >= self.batch_size * 2 else 4
+                        num_train_steps = 4 if len(self.replay_buffer) >= self.batch_size * 2 else 2
                         for _ in range(num_train_steps):
                             loss = self.train_step()
                             losses.append(loss)
                         
                         avg_loss = np.mean(losses[-100:]) if losses else 0.0
-                        royalty_rate = (total_royalties / (last_ep + 1)) * 100 if last_ep > 0 else 0
+                        royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
                         current_lr = self.optimizer.param_groups[0]['lr']
                         pbar.set_postfix({
                             'loss': f'{avg_loss:.4f}',
                             'buffer': len(self.replay_buffer),
                             'random%': f'{last_rand_prob*100:.1f}%',
                             'royalties': f'{total_royalties} ({royalty_rate:.2f}%)',
-                            'lr': f'{current_lr:.2e}'
+                            'lr': f'{current_lr:.2e}',
+                            'pending': len(pending_futures)
                         })
-                    
-                    episode_batch = []
-                    last_batch_time = time.time()
+                
                 continue
             
             # Generate episode using network (sequential, needs model access)
+            # Also process any pending async results while we're here
+            completed_futures = [f for f in pending_futures.keys() if f.ready()]
+            for future in completed_futures:
+                ep_num, rand_prob = pending_futures.pop(future)
+                try:
+                    episode_data = future.get(timeout=0.1)
+                except:
+                    continue
+                
+                if episode_data:
+                    final_score = episode_data[-1][1]
+                    total_score += final_score
+                    if final_score > 0:
+                        total_royalties += 1
+                        royalty_scores.append(final_score)
+                    elif final_score < 0:
+                        total_fouls += 1
+                    else:
+                        total_zero += 1
+                self.add_to_buffer(episode_data)
+            
             episode_data = self.generate_episode(use_random=use_random, env_idx=absolute_episode)
             
             # Track statistics
@@ -491,6 +525,26 @@ class SelfPlayTrainer:
                 checkpoint_path = f'value_net_checkpoint_ep{absolute_episode}.pth'
                 torch.save(self.model.state_dict(), checkpoint_path)
                 print(f"\nCheckpoint saved: {checkpoint_path}\n")
+        
+        # Wait for all pending async tasks to complete
+        print("\nWaiting for all pending episodes to complete...")
+        for future in list(pending_futures.keys()):
+            ep_num, rand_prob = pending_futures.pop(future)
+            try:
+                episode_data = future.get(timeout=10)
+                if episode_data:
+                    final_score = episode_data[-1][1]
+                    total_score += final_score
+                    if final_score > 0:
+                        total_royalties += 1
+                        royalty_scores.append(final_score)
+                    elif final_score < 0:
+                        total_fouls += 1
+                    else:
+                        total_zero += 1
+                self.add_to_buffer(episode_data)
+            except:
+                pass  # Skip if timeout or error
         
         pbar.close()
         
