@@ -1,7 +1,7 @@
-1. Go to your project folder:
+1. Go to your project folder: <br>
 cd C:\path\to\project
 
-2. Create a virtual environment:
+2. Create a virtual environment: <br>
 python -m venv .venv
 
 3. Activate the virtual environment:
