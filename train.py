@@ -379,15 +379,15 @@ class SelfPlayTrainer:
             while processed_episodes < num_episodes:
                 # Calculate which episode we're "on" based on processed count
                 absolute_episode = processed_episodes
-            random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
-            use_random = random.random() < random_prob
-            
-            # OPTIMIZATION: Process completed futures continuously
-            # This keeps the main loop responsive while workers stay busy
-            with futures_lock:
-                completed = [f for f in pending_futures.keys() if f.ready()]
-            
-            for future in completed:
+                random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
+                use_random = random.random() < random_prob
+                
+                # OPTIMIZATION: Process completed futures continuously
+                # This keeps the main loop responsive while workers stay busy
+                with futures_lock:
+                    completed = [f for f in pending_futures.keys() if f.ready()]
+                
+                for future in completed:
                 with futures_lock:
                     if future not in pending_futures:
                         continue
@@ -549,7 +549,7 @@ class SelfPlayTrainer:
             for future, (ep_num, rand_prob) in remaining:
                 try:
                     episode_data = future.get(timeout=1)  # Short timeout
-                if episode_data:
+                    if episode_data:
                     final_score = episode_data[-1][1]
                     total_score += final_score
                     if final_score > 0:
