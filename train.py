@@ -62,8 +62,11 @@ class SelfPlayTrainer:
         # For H200 with 24 cores, use all available cores
         cpu_count = os.cpu_count() or 4
         self.num_workers = cpu_count  # Use ALL CPU cores (optimized for H200 with 24 cores)
-        self.process_pool = None  # Will be created when needed
+        # Create pool immediately to ensure it's ready
+        from episode_worker import generate_random_episode_worker
+        self.process_pool = Pool(processes=self.num_workers)
         print(f"  CPU workers: {self.num_workers} (using all {cpu_count} CPU cores)")
+        print(f"  Multiprocessing pool created with {self.num_workers} workers")
     
     def generate_episode(self, use_random: bool = True, env_idx: int = 0) -> List[Tuple[State, float]]:
         """
@@ -328,8 +331,8 @@ class SelfPlayTrainer:
         pbar = tqdm(range(start_episode, num_episodes), desc="Training", unit="hand", initial=start_episode, total=num_episodes)
         
         # OPTIMIZATION: Batch random episodes for multiprocessing
-        # For H200 with 24 cores, batch more episodes for better throughput
-        episodes_per_batch = max(self.num_workers * 2, 32)  # Batch 2x workers or min 32 episodes
+        # For H200 with 24 cores, batch episodes to match worker count for immediate processing
+        episodes_per_batch = self.num_workers  # Process immediately with all workers
         episode_batch = []
         
         for episode_idx, episode in enumerate(pbar):
@@ -341,14 +344,16 @@ class SelfPlayTrainer:
             if use_random:
                 episode_batch.append((absolute_episode, use_random, random_prob))
                 
-                # Process batch when full or at end
+                # Process batch when full or at end (or immediately if we have workers available)
                 if len(episode_batch) >= episodes_per_batch or episode_idx == len(pbar) - 1:
                     # Generate episodes in parallel using multiprocessing
+                    # Pool should already be created in __init__, but check just in case
                     if self.process_pool is None:
                         from episode_worker import generate_random_episode_worker
                         self.process_pool = Pool(processes=self.num_workers)
                     
                     # Generate all random episodes in parallel
+                    # Use unique seeds for each episode
                     seeds = [abs(hash(f"{ep}_{time.time()}_{i}")) for i, (ep, _, _) in enumerate(episode_batch)]
                     episode_results = self.process_pool.map(generate_random_episode_worker, seeds)
                     
