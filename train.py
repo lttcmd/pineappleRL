@@ -356,17 +356,23 @@ class SelfPlayTrainer:
                     current_pending = len(pending_futures)
                 
                 # Keep queue full - submit immediately if below max
+                # Be very aggressive - submit multiple episodes at once to keep workers busy
                 if current_pending < max_pending:
-                    seed = abs(hash(f"{episode_num}_{time.time()}_{threading.current_thread().ident}"))
-                    future = self.process_pool.apply_async(generate_random_episode_worker, (seed,))
-                    random_prob = max(0.0, 1.0 - (episode_num / (num_episodes * 0.8)))
-                    
-                    with futures_lock:
-                        pending_futures[future] = (episode_num, random_prob)
-                    
-                    episode_num += 1
+                    # Submit multiple episodes in one iteration to fill queue faster
+                    episodes_to_submit = min(10, max_pending - current_pending)
+                    for _ in range(episodes_to_submit):
+                        if episode_num >= num_episodes:
+                            break
+                        seed = abs(hash(f"{episode_num}_{time.time()}_{threading.current_thread().ident}"))
+                        future = self.process_pool.apply_async(generate_random_episode_worker, (seed,))
+                        random_prob = max(0.0, 1.0 - (episode_num / (num_episodes * 0.8)))
+                        
+                        with futures_lock:
+                            pending_futures[future] = (episode_num, random_prob)
+                        
+                        episode_num += 1
                 else:
-                    time.sleep(0.001)  # Brief sleep if queue is full
+                    time.sleep(0.0001)  # Very brief sleep if queue is full
         
         # Start background producer thread
         producer = threading.Thread(target=producer_thread, daemon=True)
