@@ -589,16 +589,16 @@ def main():
     Trains the bot through millions of hands to learn good vs bad choices.
     """
     # Initialize model
-    # OPTIMIZED for H200: Increased hidden_dim to 512 for better learning capacity
+    # OPTIMIZED for H200: Increased hidden_dim to 1024 for maximum GPU utilization
     input_dim = get_input_dim()
-    model = ValueNet(input_dim, hidden_dim=512, dropout=0.1)  # 512 hidden units, 10% dropout
+    model = ValueNet(input_dim, hidden_dim=1024, dropout=0.1)  # 1024 hidden units for H200 power
     
     # Initialize trainer (will auto-detect CUDA)
-    # OPTIMIZED for H200: M
-uch larger batch size and buffer for maximum GPU utilization    trainer = SelfPlayTrainer(
+    # OPTIMIZED for H200: Maximum batch size and buffer for full GPU utilization
+    trainer = SelfPlayTrainer(
         model=model,
-        buffer_size=1000000,  # Increased buffer for H200 (was 500k) - more diverse data
-        batch_size=512,  # Increased batch size for H200 (was 256) - better GPU utilization
+        buffer_size=2000000,  # 2M buffer for H200 - maximum diverse data
+        batch_size=2048,  # Large batch size for H200 (was 512) - saturate GPU
         learning_rate=1e-3,
         use_cuda=True  # Will use CUDA if available
     )
