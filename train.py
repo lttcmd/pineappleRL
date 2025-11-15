@@ -543,6 +543,13 @@ class SelfPlayTrainer:
                 torch.save(self.model.state_dict(), checkpoint_path)
                 print(f"\nCheckpoint saved: {checkpoint_path}\n")
         
+        except KeyboardInterrupt:
+            print("\n\n" + "="*60)
+            print("Training interrupted by user (Ctrl+C)")
+            print("="*60)
+            print(f"Processed {processed_episodes:,} episodes")
+            print("Cleaning up...")
+        
         # Stop producer thread
         stop_producer.set()
         
