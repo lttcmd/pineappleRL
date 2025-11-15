@@ -391,9 +391,9 @@ class SelfPlayTrainer:
                     
                     # Update progress bar (use last episode in batch)
                     last_ep, _, last_rand_prob = episode_batch[-1]
-                    # OPTIMIZATION: Batch training - train multiple times per batch for better GPU utilization
+                    # OPTIMIZATION: Batch training - train multiple times per batch for maximum GPU utilization (H200)
                     if len(self.replay_buffer) >= self.batch_size:
-                        num_train_steps = 4 if len(self.replay_buffer) >= self.batch_size * 2 else 2
+                        num_train_steps = 16 if len(self.replay_buffer) >= self.batch_size * 2 else 8
                         for _ in range(num_train_steps):
                             loss = self.train_step()
                             losses.append(loss)
@@ -433,8 +433,8 @@ class SelfPlayTrainer:
             # OPTIMIZATION: Batch training - train less frequently but with more gradient steps
             # This amortizes training overhead and improves GPU utilization
             if len(self.replay_buffer) >= self.batch_size:
-                # Train multiple times per episode for better GPU utilization
-                num_train_steps = 2 if len(self.replay_buffer) >= self.batch_size * 2 else 1
+                # Train multiple times per episode for maximum GPU utilization (H200)
+                num_train_steps = 8 if len(self.replay_buffer) >= self.batch_size * 2 else 4
                 for _ in range(num_train_steps):
                     loss = self.train_step()
                     losses.append(loss)
