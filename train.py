@@ -14,6 +14,8 @@ import time
 import os
 import glob
 import re
+from multiprocessing import Pool, Manager
+from functools import partial
 
 from ofc_env import OfcEnv, State, Action
 from state_encoding import encode_state, get_input_dim
@@ -48,11 +50,20 @@ class SelfPlayTrainer:
         
         self.optimizer = optim.Adam(model.parameters(), lr=learning_rate)
         self.criterion = nn.MSELoss()
+        self.initial_lr = learning_rate  # Store for learning rate scheduling
         
         # Use multiple environments for parallel episode generation
         # This helps keep GPU busy while CPU generates episodes
         self.num_envs = 4  # Number of parallel environments
         self.envs = [OfcEnv() for _ in range(self.num_envs)]
+        
+        # OPTIMIZATION: Multiprocessing for parallel episode generation
+        # Use multiprocessing to bypass Python's GIL and use all CPU cores
+        # For H200 with 24 cores, use all available cores
+        cpu_count = os.cpu_count() or 4
+        self.num_workers = cpu_count  # Use ALL CPU cores (optimized for H200 with 24 cores)
+        self.process_pool = None  # Will be created when needed
+        print(f"  CPU workers: {self.num_workers} (using all {cpu_count} CPU cores)")
     
     def generate_episode(self, use_random: bool = True, env_idx: int = 0) -> List[Tuple[State, float]]:
         """
@@ -122,10 +133,27 @@ class SelfPlayTrainer:
             all_data.extend(episode_data)
         return all_data
     
-    def _choose_action_with_net(self, state: State, legal_actions: List[Action], env_idx: int = 0) -> Action:
-        """Choose action using value network (greedy) - batched for GPU efficiency."""
+    def _choose_action_with_net(self, state: State, legal_actions: List[Action], env_idx: int = 0, max_actions: int = 50) -> Action:
+        """
+        Choose action using value network (greedy) - batched for GPU efficiency.
+        Optimized: Only evaluates top N actions to reduce CPU bottleneck.
+        
+        Args:
+            max_actions: Maximum number of actions to evaluate (default 50)
+                         Reduces CPU time when there are many legal actions
+        """
         if not legal_actions:
             return None
+        
+        # OPTIMIZATION: If too many actions, sample a subset
+        # This dramatically reduces CPU time (e.g., 200 actions -> 50 actions)
+        if len(legal_actions) > max_actions:
+            # Sample randomly but keep it deterministic for same state
+            # Use state hash for reproducibility
+            state_hash = hash(str(state.board) + str(state.current_draw))
+            random.seed(state_hash)
+            legal_actions = random.sample(legal_actions, max_actions)
+            random.seed()  # Reset seed
         
         # Use one of the environments for simulation
         env = self.envs[env_idx % len(self.envs)]
@@ -143,8 +171,9 @@ class SelfPlayTrainer:
                 next_states.append(next_state)
                 valid_actions.append(action)
             
-            # Encode all states at once
-            encoded_batch = torch.stack([encode_state(s).to(self.device) for s in next_states])
+            # OPTIMIZATION: Use batch encoding for better performance
+            from state_encoding import encode_state_batch
+            encoded_batch = encode_state_batch(next_states).to(self.device, non_blocking=True)
             
             # Forward pass on entire batch (much faster on GPU)
             values = self.model(encoded_batch).squeeze()
@@ -174,12 +203,10 @@ class SelfPlayTrainer:
         # Sample batch
         batch = random.sample(self.replay_buffer, self.batch_size)
         
-        # Encode states and prepare targets (batch encoding on CPU, then move to GPU)
-        states = [encode_state(s) for s, _ in batch]
+        # OPTIMIZATION: Use batch encoding for better performance
+        from state_encoding import encode_state_batch
+        state_batch = encode_state_batch([s for s, _ in batch]).to(self.device, non_blocking=True)
         targets = torch.tensor([score for _, score in batch], dtype=torch.float32).unsqueeze(1)
-        
-        # Stack states into batch and move to device
-        state_batch = torch.stack(states).to(self.device, non_blocking=True)
         targets = targets.to(self.device, non_blocking=True)
         
         # Forward pass
@@ -215,14 +242,51 @@ class SelfPlayTrainer:
     def load_checkpoint(self, checkpoint_path: str) -> int:
         """Load model from checkpoint. Returns episode number."""
         print(f"Loading checkpoint: {checkpoint_path}")
-        self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
+        
+        # Load checkpoint to inspect architecture
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+        
+        # Detect architecture from checkpoint
+        # Old format (256 hidden, no dropout): net.0.weight shape is [256, 838], net.2.weight exists
+        # New format (512 hidden, with dropout): net.0.weight shape is [512, 838], net.3.weight exists (net.2 is Dropout)
+        first_layer_weight = checkpoint.get('net.0.weight', None)
+        if first_layer_weight is not None:
+            hidden_dim = first_layer_weight.shape[0]
+            # Old model: net.2 is Linear layer (has weight)
+            # New model: net.2 is Dropout (no weight), net.3 is Linear (has weight)
+            has_dropout = 'net.2.weight' not in checkpoint and 'net.3.weight' in checkpoint
+            
+            # Check if current model matches checkpoint architecture
+            current_first_layer = self.model.net[0].weight.shape[0]
+            current_has_dropout = len(self.model.net) > 7  # New model has 13 layers, old has 7
+            
+            if hidden_dim != current_first_layer or has_dropout != current_has_dropout:
+                # Architecture mismatch - need to recreate model
+                print(f"  Detected checkpoint architecture: {hidden_dim} hidden units, dropout={has_dropout}")
+                print(f"  Current model: {current_first_layer} hidden units, dropout={current_has_dropout}")
+                print(f"  Recreating model to match checkpoint architecture...")
+                
+                # Recreate model with matching architecture
+                from state_encoding import get_input_dim
+                from value_net import ValueNet
+                input_dim = get_input_dim()
+                dropout = 0.1 if has_dropout else 0.0
+                self.model = ValueNet(input_dim, hidden_dim=hidden_dim, dropout=dropout)
+                self.model = self.model.to(self.device)
+                
+                # Recreate optimizer with new model
+                self.optimizer = optim.Adam(self.model.parameters(), lr=self.initial_lr)
+        
+        # Now load the checkpoint
+        self.model.load_state_dict(checkpoint, strict=False)
+        
         # Extract episode number from filename
         match = re.search(r'ep(\d+)\.pth', checkpoint_path)
         episode = int(match.group(1)) if match else 0
         print(f"Resuming from episode {episode:,}")
         return episode
     
-    def train(self, num_episodes: int, episodes_per_update: int = 10, eval_frequency: int = 1000, resume: bool = True):
+    def train(self, num_episodes: int, episodes_per_update: int = 10, eval_frequency: int = 1000, resume: bool = True, use_lr_schedule: bool = True):
         """
         Train the model using self-play through millions of hands.
         The bot learns what good and bad choices are via RL.
@@ -263,22 +327,92 @@ class SelfPlayTrainer:
         # Progress bar for episodes (starting from resume point)
         pbar = tqdm(range(start_episode, num_episodes), desc="Training", unit="hand", initial=start_episode, total=num_episodes)
         
+        # OPTIMIZATION: Batch random episodes for multiprocessing
+        episodes_per_batch = self.num_workers  # Generate multiple random episodes in parallel
+        episode_batch = []
+        
         for episode_idx, episode in enumerate(pbar):
-            # episode is the actual episode number (0 to num_episodes-1, or start_episode to num_episodes-1)
-            # We need to track the absolute episode number for statistics
             absolute_episode = episode
-            # Gradually transition from random to learned policy
-            # First 20%: pure random, then gradually use network
             random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
             use_random = random.random() < random_prob
             
-            # Generate episode (using round-robin across parallel envs)
+            # OPTIMIZATION: Batch random episodes for parallel processing
+            if use_random:
+                episode_batch.append((absolute_episode, use_random, random_prob))
+                
+                # Process batch when full or at end
+                if len(episode_batch) >= episodes_per_batch or episode_idx == len(pbar) - 1:
+                    # Generate episodes in parallel using multiprocessing
+                    if self.process_pool is None:
+                        from episode_worker import generate_random_episode_worker
+                        self.process_pool = Pool(processes=self.num_workers)
+                    
+                    # Generate all random episodes in parallel
+                    seeds = [abs(hash(f"{ep}_{time.time()}_{i}")) for i, (ep, _, _) in enumerate(episode_batch)]
+                    episode_results = self.process_pool.map(generate_random_episode_worker, seeds)
+                    
+                    # Process results
+                    for (ep_num, _, rand_prob), episode_data in zip(episode_batch, episode_results):
+                        # Track statistics
+                        if episode_data:
+                            final_score = episode_data[-1][1]
+                            total_score += final_score
+                            if final_score > 0:
+                                total_royalties += 1
+                                royalty_scores.append(final_score)
+                            elif final_score < 0:
+                                total_fouls += 1
+                            else:
+                                total_zero += 1
+                        
+                        # Add to buffer
+                        self.add_to_buffer(episode_data)
+                        
+                        # Check for checkpoint after each episode (even in batch)
+                        if ep_num > 0 and ep_num % eval_frequency == 0:
+                            # Clear progress bar and print clean evaluation
+                            pbar.clear()
+                            print(f"\n--- Evaluation at episode {ep_num:,} ---\n")
+                            # Calculate stats based on hands since start of this training session
+                            hands_this_session = ep_num - start_episode + 1
+                            training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
+                            avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
+                            self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
+                                          total_royalties=total_royalties, total_zero=total_zero,
+                                          training_foul_rate=training_foul_rate,
+                                          avg_score_per_hand=avg_score_per_hand,
+                                          start_episode=start_episode, current_episode=ep_num)
+                            
+                            # Save checkpoint
+                            checkpoint_path = f'value_net_checkpoint_ep{ep_num}.pth'
+                            torch.save(self.model.state_dict(), checkpoint_path)
+                            print(f"\nCheckpoint saved: {checkpoint_path}\n")
+                    
+                    # Update progress bar (use last episode in batch)
+                    last_ep, _, last_rand_prob = episode_batch[-1]
+                    if len(self.replay_buffer) >= self.batch_size:
+                        loss = self.train_step()
+                        losses.append(loss)
+                        
+                        avg_loss = np.mean(losses[-100:]) if losses else 0.0
+                        royalty_rate = (total_royalties / (last_ep + 1)) * 100 if last_ep > 0 else 0
+                        pbar.set_postfix({
+                            'loss': f'{avg_loss:.4f}',
+                            'buffer': len(self.replay_buffer),
+                            'random%': f'{last_rand_prob*100:.1f}%',
+                            'royalties': f'{total_royalties} ({royalty_rate:.2f}%)'
+                        })
+                    
+                    episode_batch = []
+                continue
+            
+            # Generate episode using network (sequential, needs model access)
             episode_data = self.generate_episode(use_random=use_random, env_idx=absolute_episode)
             
             # Track statistics
             if episode_data:
                 final_score = episode_data[-1][1]
-                total_score += final_score  # Add to total for average
+                total_score += final_score
                 if final_score > 0:
                     total_royalties += 1
                     royalty_scores.append(final_score)
@@ -295,14 +429,23 @@ class SelfPlayTrainer:
                 loss = self.train_step()
                 losses.append(loss)
                 
+                # Learning rate scheduling: reduce LR as training progresses
+                if use_lr_schedule and absolute_episode > 0 and absolute_episode % 10000 == 0:
+                    # Reduce LR by 10% every 10k episodes (helps fine-tune after initial learning)
+                    new_lr = self.initial_lr * (0.9 ** (absolute_episode // 10000))
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = new_lr
+                
                 # Update progress bar
                 avg_loss = np.mean(losses[-100:]) if losses else 0.0
                 royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
+                current_lr = self.optimizer.param_groups[0]['lr']
                 pbar.set_postfix({
                     'loss': f'{avg_loss:.4f}',
                     'buffer': len(self.replay_buffer),
                     'random%': f'{random_prob*100:.1f}%',
-                    'royalties': f'{total_royalties} ({royalty_rate:.2f}%)'
+                    'royalties': f'{total_royalties} ({royalty_rate:.2f}%)',
+                    'lr': f'{current_lr:.2e}'
                 })
             
             # Periodic evaluation and checkpointing
@@ -311,12 +454,15 @@ class SelfPlayTrainer:
                 pbar.clear()
                 print(f"\n--- Evaluation at episode {absolute_episode:,} ---\n")
                 # Pass training stats to evaluation
-                training_foul_rate = (total_fouls / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
-                avg_score_per_hand = total_score / (absolute_episode + 1) if absolute_episode > 0 else 0.0
-                self._evaluate(total_episodes=absolute_episode+1, total_fouls=total_fouls, 
+                # Calculate stats based on hands since start of this training session
+                hands_this_session = absolute_episode - start_episode + 1
+                training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
+                avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
+                self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
                               total_royalties=total_royalties, total_zero=total_zero,
                               training_foul_rate=training_foul_rate,
-                              avg_score_per_hand=avg_score_per_hand)
+                              avg_score_per_hand=avg_score_per_hand,
+                              start_episode=start_episode, current_episode=absolute_episode)
                 
                 # Save checkpoint
                 checkpoint_path = f'value_net_checkpoint_ep{absolute_episode}.pth'
@@ -324,6 +470,11 @@ class SelfPlayTrainer:
                 print(f"\nCheckpoint saved: {checkpoint_path}\n")
         
         pbar.close()
+        
+        # Cleanup process pool
+        if self.process_pool is not None:
+            self.process_pool.close()
+            self.process_pool.join()
         
         # Final evaluation
         print(f"\n{'='*60}")
@@ -345,7 +496,8 @@ class SelfPlayTrainer:
     
     def _evaluate(self, total_episodes: int = 0, total_fouls: int = 0, 
                   total_royalties: int = 0, total_zero: int = 0, 
-                  training_foul_rate: float = 0.0, avg_score_per_hand: float = 0.0):
+                  training_foul_rate: float = 0.0, avg_score_per_hand: float = 0.0,
+                  start_episode: int = 0, current_episode: int = 0):
         """Evaluate model on test episodes."""
         self.model.eval()
         test_scores = []
@@ -388,7 +540,11 @@ class SelfPlayTrainer:
             if total_episodes > 0:
                 print(f"{'='*23}")
                 print(f"Training Statistics:")
-                print(f"    Total Hands: {total_episodes:,}")
+                if start_episode > 0:
+                    print(f"    Episodes: {start_episode:,} - {current_episode:,} (this session)")
+                    print(f"    Total Hands This Session: {total_episodes:,}")
+                else:
+                    print(f"    Total Hands: {total_episodes:,}")
                 print(f"    Hands Fouled: {total_fouls:,}/{total_episodes:,} ({training_foul_rate:.1f}%)")
                 print(f"    Hands Scored 0: {total_zero:,}/{total_episodes:,} ({total_zero/total_episodes*100:.1f}%)")
                 print(f"    Hands with Royalties: {total_royalties:,}/{total_episodes:,} ({total_royalties/total_episodes*100:.2f}%)")
@@ -418,14 +574,16 @@ def main():
     Trains the bot through millions of hands to learn good vs bad choices.
     """
     # Initialize model
+    # OPTIMIZED for H200: Increased hidden_dim to 512 for better learning capacity
     input_dim = get_input_dim()
-    model = ValueNet(input_dim, hidden_dim=256)
+    model = ValueNet(input_dim, hidden_dim=512, dropout=0.1)  # 512 hidden units, 10% dropout
     
     # Initialize trainer (will auto-detect CUDA)
+    # OPTIMIZED for H200: Larger batch size and buffer for better GPU utilization
     trainer = SelfPlayTrainer(
         model=model,
-        buffer_size=200000,  # Larger buffer for millions of hands
-        batch_size=64,  # Balanced batch size for speed and GPU utilization
+        buffer_size=500000,  # Increased buffer for H200 (was 200k)
+        batch_size=256,  # Increased batch size for H200 (was 64) - better GPU utilization
         learning_rate=1e-3,
         use_cuda=True  # Will use CUDA if available
     )
@@ -437,7 +595,8 @@ def main():
     trainer.train(
         num_episodes=num_episodes,
         episodes_per_update=10,
-        eval_frequency=10000  # Evaluate every 10k hands
+        eval_frequency=10000,  # Evaluate every 10k hands
+        use_lr_schedule=True  # Enable learning rate scheduling for better convergence
     )
     
     # Save final model

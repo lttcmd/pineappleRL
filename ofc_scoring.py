@@ -15,7 +15,7 @@ CARDS_PER_ROUND = 3
 PLACE_COUNT_PER_ROUND = 2
 ROW_WIN = 1
 SCOOP_BONUS = 3
-FOUL_PENALTY = 6
+FOUL_PENALTY = 3
 
 
 def rank_to_string(rank: Rank) -> str:
@@ -386,7 +386,7 @@ def score_board(bottom: List[Card], middle: List[Card], top: List[Card]) -> Tupl
     Score a complete board.
     
     Scoring rules:
-    - If fouled (bottom <= middle or middle <= top): -6 points
+    - If fouled (bottom <= middle or middle <= top): -3 points
     - If not fouled: royalties only (0 if no special hands, positive if royalties exist)
     
     Note: ROW_WIN (+1 per row won) and SCOOP_BONUS (+3) are for multiplayer pairwise
@@ -397,7 +397,7 @@ def score_board(bottom: List[Card], middle: List[Card], top: List[Card]) -> Tupl
     is_valid, reason = validate_board(bottom, middle, top)
     
     if not is_valid:
-        # Fouled: -6 point penalty
+        # Fouled: -3 point penalty
         return -FOUL_PENALTY, True
     
     # Not fouled: Calculate royalties
