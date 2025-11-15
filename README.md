@@ -1,23 +1,23 @@
+1. Go to your project folder:
+cd C:\path\to\project
 
-#1. For Windows (CUDA 12.1):
-    ```bash
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-    ```
+2. Create a virtual environment:
+python -m venv .venv
 
-  For Linux (CUDA 12.1):
-  ```bash
-  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-  ```
+3. Activate the virtual environment:
+.venv\Scripts\Activate
 
-# 2. Verify GPU is detected
+4. Install PyTorch with CUDA 12.1:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+5. Check that the GPU is available:
 python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
-# 3. Install other dependencies
-pip install -r requirements.txt
+6. Install the remaining required packages:
+pip install numpy
+pip install tqdm
+pip install matplotlib
+pip install tensorboard
 
-# 4. Test the installation
-python test_one_hand.py
-
-# 5. Start training
+7. Start training:
 python train.py
-```
