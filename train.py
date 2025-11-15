@@ -19,6 +19,8 @@ from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import threading
 from queue import Queue
+import signal
+import sys
 
 from ofc_env import OfcEnv, State, Action
 from state_encoding import encode_state, get_input_dim
@@ -561,10 +563,11 @@ class SelfPlayTrainer:
         
         pbar.close()
         
-        # Cleanup process pool
+        # Cleanup process pool gracefully
         if self.process_pool is not None:
-            self.process_pool.close()
-            self.process_pool.join()
+            # Terminate workers immediately to avoid KeyboardInterrupt spam
+            self.process_pool.terminate()
+            self.process_pool.join(timeout=1.0)  # Short timeout
         
         # Final evaluation
         print(f"\n{'='*60}")
