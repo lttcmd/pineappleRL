@@ -331,8 +331,8 @@ class SelfPlayTrainer:
         pbar = tqdm(range(start_episode, num_episodes), desc="Training", unit="hand", initial=start_episode, total=num_episodes)
         
         # OPTIMIZATION: Batch random episodes for multiprocessing
-        # For H200 with 24 cores, process batches immediately to keep all cores busy
-        episodes_per_batch = self.num_workers  # Process immediately with all workers
+        # For H200 with 24 cores, keep a large queue of work to ensure all cores stay busy
+        episodes_per_batch = self.num_workers * 3  # Process 3x workers worth (72 episodes) to keep queue full
         episode_batch = []
         last_batch_time = time.time()
         
@@ -345,11 +345,11 @@ class SelfPlayTrainer:
             if use_random:
                 episode_batch.append((absolute_episode, use_random, random_prob))
                 
-                # Process batch when full, or after timeout (0.1s) to avoid waiting
+                # Process batch when full, or after timeout (0.05s) to avoid waiting
                 current_time = time.time()
                 should_process = (len(episode_batch) >= episodes_per_batch or 
                                  episode_idx == len(pbar) - 1 or
-                                 (len(episode_batch) > 0 and current_time - last_batch_time > 0.1))
+                                 (len(episode_batch) >= self.num_workers and current_time - last_batch_time > 0.05))
                 
                 if should_process:
                     # Generate episodes in parallel using multiprocessing
@@ -360,7 +360,10 @@ class SelfPlayTrainer:
                     # Generate all random episodes in parallel
                     # Use unique seeds for each episode
                     seeds = [abs(hash(f"{ep}_{time.time()}_{i}")) for i, (ep, _, _) in enumerate(episode_batch)]
-                    episode_results = self.process_pool.map(generate_random_episode_worker, seeds)
+                    
+                    # Use map() - it should distribute work across all workers
+                    # The key is having enough work (72 episodes) so all 24 workers stay busy
+                    episode_results = self.process_pool.map(generate_random_episode_worker, seeds, chunksize=1)
                     
                     # Process results
                     for (ep_num, _, rand_prob), episode_data in zip(episode_batch, episode_results):
