@@ -438,7 +438,8 @@ class SelfPlayTrainer:
                     loss = self.train_step()
                     losses.append(loss)
             
-            # Update progress bar every iteration with fixed-width formatting to prevent jittering
+            # Update progress bar with fixed-width formatting to prevent jittering
+            # tqdm automatically calculates rate (hands/sec) based on pbar.n updates
             with futures_lock:
                 pending_count = len(pending_futures)
                 last_rand_prob = list(pending_futures.values())[-1][1] if pending_futures else random_prob
@@ -447,13 +448,13 @@ class SelfPlayTrainer:
             royalty_rate = (total_royalties / processed_episodes) * 100 if processed_episodes > 0 else 0.0
             current_lr = self.optimizer.param_groups[0]['lr'] if len(self.replay_buffer) >= self.batch_size else self.initial_lr
             
-            # Fixed-width formatting to prevent jittering
+            # Fixed-width formatting to prevent jittering - all values have consistent width
             pbar.set_postfix({
-                'loss': f'{avg_loss:.4f}',
+                'loss': f'{avg_loss:>7.4f}',
                 'buffer': f'{len(self.replay_buffer):>6,}',
                 'random%': f'{last_rand_prob*100:>5.1f}%',
                 'royalties': f'{total_royalties:>5,} ({royalty_rate:>5.2f}%)',
-                'lr': f'{current_lr:.2e}',
+                'lr': f'{current_lr:>8.2e}',
                 'pending': f'{pending_count:>3}'
             }, refresh=False)  # refresh=False reduces flicker
             
