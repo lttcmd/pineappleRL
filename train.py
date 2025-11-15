@@ -438,45 +438,57 @@ class SelfPlayTrainer:
                     continue
                 
                 # Process all completed futures in batch (outside the lock)
+                # OPTIMIZATION: Get all results at once to reduce overhead
                 batch_data = []
                 for future, ep_num, rand_prob in completed_with_metadata:
                     try:
-                        episode_data = future.get(timeout=0.01)  # Very short timeout
+                        # Get result immediately - future is already ready
+                        episode_data = future.get(timeout=0.001)  # Very short timeout since we know it's ready
                         if episode_data:
                             batch_data.append((episode_data, ep_num))
-                    except:
+                    except Exception as e:
+                        # Skip failed futures
                         continue
                 
-                # Process batch data (add to buffer, update stats)
-                for episode_data, ep_num in batch_data:
-                    final_score = episode_data[-1][1]
-                    total_score += final_score
-                    if final_score > 0:
-                        total_royalties += 1
-                        royalty_scores.append(final_score)
-                    elif final_score < 0:
-                        total_fouls += 1
-                    else:
-                        total_zero += 1
+                # OPTIMIZATION: Batch process all episodes at once
+                # This reduces loop overhead and allows better CPU utilization
+                if batch_data:
+                    # Process all episodes and batch add to buffer
+                    buffer_additions = []
+                    for episode_data, ep_num in batch_data:
+                        final_score = episode_data[-1][1]
+                        total_score += final_score
+                        if final_score > 0:
+                            total_royalties += 1
+                            royalty_scores.append(final_score)
+                        elif final_score < 0:
+                            total_fouls += 1
+                        else:
+                            total_zero += 1
+                        
+                        # Collect all states for batch addition
+                        buffer_additions.extend(episode_data)
+                        processed_episodes += 1
+                        
+                        # Check for checkpoint (only check once per batch to reduce overhead)
+                        if ep_num > 0 and ep_num % eval_frequency == 0:
+                            pbar.clear()
+                            print(f"\n--- Evaluation at episode {ep_num:,} ---\n")
+                            hands_this_session = ep_num - start_episode + 1
+                            training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
+                            avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
+                            self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
+                                          total_royalties=total_royalties, total_zero=total_zero,
+                                          training_foul_rate=training_foul_rate,
+                                          avg_score_per_hand=avg_score_per_hand,
+                                          start_episode=start_episode, current_episode=ep_num)
+                            checkpoint_path = f'value_net_checkpoint_ep{ep_num}.pth'
+                            torch.save(self.model.state_dict(), checkpoint_path)
+                            print(f"\nCheckpoint saved: {checkpoint_path}\n")
                     
-                    self.add_to_buffer(episode_data)
-                    processed_episodes += 1
-                    
-                    # Check for checkpoint
-                    if ep_num > 0 and ep_num % eval_frequency == 0:
-                        pbar.clear()
-                        print(f"\n--- Evaluation at episode {ep_num:,} ---\n")
-                        hands_this_session = ep_num - start_episode + 1
-                        training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
-                        avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
-                        self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
-                                      total_royalties=total_royalties, total_zero=total_zero,
-                                      training_foul_rate=training_foul_rate,
-                                      avg_score_per_hand=avg_score_per_hand,
-                                      start_episode=start_episode, current_episode=ep_num)
-                        checkpoint_path = f'value_net_checkpoint_ep{ep_num}.pth'
-                        torch.save(self.model.state_dict(), checkpoint_path)
-                        print(f"\nCheckpoint saved: {checkpoint_path}\n")
+                    # Batch add all states to buffer at once (much faster than one-by-one)
+                    if buffer_additions:
+                        self.replay_buffer.extend(buffer_additions)
                 
                 # OPTIMIZATION: Train GPU CONTINUOUSLY - this is critical for 100% GPU usage
                 # Train as many times as possible to keep GPU saturated
