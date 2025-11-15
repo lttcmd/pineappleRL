@@ -377,12 +377,16 @@ class SelfPlayTrainer:
                             pending_futures[future] = (ep_num, rand_prob)
                     
                     submission_count += len(new_futures)
-                    if submission_count % 500 == 0:
-                        print(f"[Producer] Submitted {submission_count:,} episodes, queue size: {len(pending_futures)}")
+                    # Only log every 5000 submissions to reduce noise
+                    if submission_count % 5000 == 0:
+                        with futures_lock:
+                            queue_size = len(pending_futures)
+                        print(f"[Producer] Submitted {submission_count:,} episodes, queue size: {queue_size}")
                 else:
-                    # Queue is full - tiny sleep to prevent 100% CPU spin
+                    # Queue is full - very tiny sleep to prevent 100% CPU spin
                     # This allows main loop to process work and free up queue space
-                    time.sleep(0.0001)
+                    # But we want to check again very quickly
+                    time.sleep(0.00001)  # Extremely small sleep - just enough to yield CPU
         
         # Start background producer thread
         producer = threading.Thread(target=producer_thread, daemon=True)
@@ -424,9 +428,10 @@ class SelfPlayTrainer:
                 # Check readiness outside the lock (this is safe - ready() doesn't modify state)
                 completed = [f for f in all_futures if f.ready()]
                 
-                # If no completed futures, sleep briefly to prevent busy-wait
+                # If no completed futures, sleep very briefly to prevent busy-wait
+                # But keep it minimal - we want to process as fast as possible
                 if not completed:
-                    time.sleep(0.001)  # Small sleep prevents 100% CPU spin
+                    time.sleep(0.0001)  # Very small sleep - just enough to prevent 100% spin
                     continue
                 
                 # Now acquire lock to remove completed futures and get their metadata
