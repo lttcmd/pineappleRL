@@ -333,7 +333,9 @@ class SelfPlayTrainer:
         
         # Progress bar for episodes (starting from resume point)
         # Use manual update mode to track actual processed episodes, not loop iterations
-        pbar = tqdm(total=num_episodes, desc="Training", unit="hand", initial=start_episode, position=0, leave=True)
+        # Format: "Training: X%|bar| current/total [time<remaining, rate] random%"
+        pbar = tqdm(total=num_episodes, desc="Training", unit="hand", initial=start_episode, position=0, leave=True, 
+                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
         
         # OPTIMIZATION: Use background thread to continuously submit work
         # This ensures workers NEVER idle - they always have work queued
@@ -438,25 +440,14 @@ class SelfPlayTrainer:
                     loss = self.train_step()
                     losses.append(loss)
             
-            # Update progress bar with fixed-width formatting to prevent jittering
-            # tqdm automatically calculates rate (hands/sec) based on pbar.n updates
+            # Update progress bar - simple display with only essential info
             with futures_lock:
-                pending_count = len(pending_futures)
                 last_rand_prob = list(pending_futures.values())[-1][1] if pending_futures else random_prob
             
-            avg_loss = np.mean(losses[-100:]) if losses else 0.0
-            royalty_rate = (total_royalties / processed_episodes) * 100 if processed_episodes > 0 else 0.0
-            current_lr = self.optimizer.param_groups[0]['lr'] if len(self.replay_buffer) >= self.batch_size else self.initial_lr
-            
-            # Fixed-width formatting to prevent jittering - all values have consistent width
+            # Simple progress bar with only hands, rate, and random%
             pbar.set_postfix({
-                'loss': f'{avg_loss:>7.4f}',
-                'buffer': f'{len(self.replay_buffer):>6,}',
-                'random%': f'{last_rand_prob*100:>5.1f}%',
-                'royalties': f'{total_royalties:>5,} ({royalty_rate:>5.2f}%)',
-                'lr': f'{current_lr:>8.2e}',
-                'pending': f'{pending_count:>3}'
-            }, refresh=False)  # refresh=False reduces flicker
+                'random%': f'{last_rand_prob*100:.1f}%'
+            }, refresh=False)
             
             # If using random, just continue - background thread handles it
             if use_random:
