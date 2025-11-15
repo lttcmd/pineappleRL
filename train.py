@@ -20,6 +20,7 @@ from functools import partial
 from ofc_env import OfcEnv, State, Action
 from state_encoding import encode_state, get_input_dim
 from value_net import ValueNet
+from episode_worker import generate_random_episode_worker
 
 
 class SelfPlayTrainer:
@@ -63,7 +64,6 @@ class SelfPlayTrainer:
         cpu_count = os.cpu_count() or 4
         self.num_workers = cpu_count  # Use ALL CPU cores (optimized for H200 with 24 cores)
         # Create pool immediately to ensure it's ready
-        from episode_worker import generate_random_episode_worker
         self.process_pool = Pool(processes=self.num_workers)
         print(f"  CPU workers: {self.num_workers} (using all {cpu_count} CPU cores)")
         print(f"  Multiprocessing pool created with {self.num_workers} workers")
@@ -349,7 +349,6 @@ class SelfPlayTrainer:
                     # Generate episodes in parallel using multiprocessing
                     # Pool should already be created in __init__, but check just in case
                     if self.process_pool is None:
-                        from episode_worker import generate_random_episode_worker
                         self.process_pool = Pool(processes=self.num_workers)
                     
                     # Generate all random episodes in parallel
