@@ -394,38 +394,38 @@ class SelfPlayTrainer:
                     completed = [f for f in pending_futures.keys() if f.ready()]
                 
                 for future in completed:
-                with futures_lock:
-                    if future not in pending_futures:
+                    with futures_lock:
+                        if future not in pending_futures:
+                            continue
+                        ep_num, rand_prob = pending_futures.pop(future)
+                    
+                    try:
+                        episode_data = future.get(timeout=0.1)
+                    except:
                         continue
-                    ep_num, rand_prob = pending_futures.pop(future)
-                
-                try:
-                    episode_data = future.get(timeout=0.1)
-                except:
-                    continue
-                
-                # Track statistics
-                if episode_data:
-                    final_score = episode_data[-1][1]
-                    total_score += final_score
-                    if final_score > 0:
-                        total_royalties += 1
-                        royalty_scores.append(final_score)
-                    elif final_score < 0:
-                        total_fouls += 1
-                    else:
-                        total_zero += 1
-                
-                # Add to buffer
-                self.add_to_buffer(episode_data)
-                
-                # Update progress bar to reflect actual processed episodes
-                processed_episodes += 1
-                pbar.n = processed_episodes
-                pbar.refresh()
-                
-                # Check for checkpoint
-                if ep_num > 0 and ep_num % eval_frequency == 0:
+                    
+                    # Track statistics
+                    if episode_data:
+                        final_score = episode_data[-1][1]
+                        total_score += final_score
+                        if final_score > 0:
+                            total_royalties += 1
+                            royalty_scores.append(final_score)
+                        elif final_score < 0:
+                            total_fouls += 1
+                        else:
+                            total_zero += 1
+                    
+                    # Add to buffer
+                    self.add_to_buffer(episode_data)
+                    
+                    # Update progress bar to reflect actual processed episodes
+                    processed_episodes += 1
+                    pbar.n = processed_episodes
+                    pbar.refresh()
+                    
+                    # Check for checkpoint
+                    if ep_num > 0 and ep_num % eval_frequency == 0:
                     pbar.clear()
                     print(f"\n--- Evaluation at episode {ep_num:,} ---\n")
                     hands_this_session = ep_num - start_episode + 1
@@ -699,6 +699,7 @@ def main():
         num_episodes=num_episodes,
         episodes_per_update=10,
         eval_frequency=250000,  # Checkpoint every 250k hands
+        resume=False,  # Start from scratch, don't resume from checkpoints
         use_lr_schedule=True  # Enable learning rate scheduling for better convergence
     )
     
