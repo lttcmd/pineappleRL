@@ -506,14 +506,14 @@ class SelfPlayTrainer:
             pbar.n = processed_episodes
             pbar.refresh()
             
-                # OPTIMIZATION: Train continuously to keep GPU at 100%
-                # Train on EVERY network episode if buffer has data
-                if len(self.replay_buffer) >= self.batch_size:
-                    # Train many times to saturate GPU - increase for H200
-                    num_train_steps = 16 if len(self.replay_buffer) >= self.batch_size * 2 else 8
-                    for _ in range(num_train_steps):
-                        loss = self.train_step()
-                        losses.append(loss)
+            # OPTIMIZATION: Train continuously to keep GPU at 100%
+            # Train on EVERY network episode if buffer has data
+            if len(self.replay_buffer) >= self.batch_size:
+                # Train many times to saturate GPU - increase for H200
+                num_train_steps = 16 if len(self.replay_buffer) >= self.batch_size * 2 else 8
+                for _ in range(num_train_steps):
+                    loss = self.train_step()
+                    losses.append(loss)
                 
                 # Learning rate scheduling: reduce LR as training progresses
                 if use_lr_schedule and absolute_episode > 0 and absolute_episode % 10000 == 0:
