@@ -537,26 +537,6 @@ class SelfPlayTrainer:
                 torch.save(self.model.state_dict(), checkpoint_path)
                 print(f"\nCheckpoint saved: {checkpoint_path}\n")
         
-        # Wait for all pending async tasks to complete
-        print("\nWaiting for all pending episodes to complete...")
-        for future in list(pending_futures.keys()):
-            ep_num, rand_prob = pending_futures.pop(future)
-            try:
-                episode_data = future.get(timeout=10)
-                if episode_data:
-                    final_score = episode_data[-1][1]
-                    total_score += final_score
-                    if final_score > 0:
-                        total_royalties += 1
-                        royalty_scores.append(final_score)
-                    elif final_score < 0:
-                        total_fouls += 1
-                    else:
-                        total_zero += 1
-                self.add_to_buffer(episode_data)
-            except:
-                pass  # Skip if timeout or error
-        
         # Stop producer thread
         stop_producer.set()
         
