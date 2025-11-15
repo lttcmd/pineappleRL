@@ -377,8 +377,8 @@ class SelfPlayTrainer:
         # We use a while loop instead of for loop to properly track processed episodes
         try:
             while processed_episodes < num_episodes:
-            # Calculate which episode we're "on" based on processed count
-            absolute_episode = processed_episodes
+                # Calculate which episode we're "on" based on processed count
+                absolute_episode = processed_episodes
             random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
             use_random = random.random() < random_prob
             
@@ -702,5 +702,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nShutting down gracefully...")
+        sys.exit(0)
 
