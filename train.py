@@ -557,6 +557,31 @@ class SelfPlayTrainer:
             except:
                 pass  # Skip if timeout or error
         
+        # Stop producer thread
+        stop_producer.set()
+        
+        # Wait for all pending async tasks to complete
+        print("\nWaiting for all pending episodes to complete...")
+        with futures_lock:
+            remaining = list(pending_futures.items())
+        
+        for future, (ep_num, rand_prob) in remaining:
+            try:
+                episode_data = future.get(timeout=10)
+                if episode_data:
+                    final_score = episode_data[-1][1]
+                    total_score += final_score
+                    if final_score > 0:
+                        total_royalties += 1
+                        royalty_scores.append(final_score)
+                    elif final_score < 0:
+                        total_fouls += 1
+                    else:
+                        total_zero += 1
+                self.add_to_buffer(episode_data)
+            except:
+                pass  # Skip if timeout or error
+        
         pbar.close()
         
         # Cleanup process pool
