@@ -319,6 +319,7 @@ class SelfPlayTrainer:
         royalty_scores = []
         total_score = 0.0  # Track total score for average calculation
         start_episode = 0
+        processed_episodes = start_episode  # Track actual processed episodes for progress bar
         
         # Try to resume from checkpoint if requested
         if resume:
@@ -331,7 +332,8 @@ class SelfPlayTrainer:
                 print(f"Will train for {num_episodes - start_episode:,} more episodes (total target: {num_episodes:,})")
         
         # Progress bar for episodes (starting from resume point)
-        pbar = tqdm(range(start_episode, num_episodes), desc="Training", unit="hand", initial=start_episode, total=num_episodes)
+        # Use manual update mode to track actual processed episodes, not loop iterations
+        pbar = tqdm(total=num_episodes, desc="Training", unit="hand", initial=start_episode, position=0, leave=True)
         
         # OPTIMIZATION: Use background thread to continuously submit work
         # This ensures workers NEVER idle - they always have work queued
@@ -403,6 +405,11 @@ class SelfPlayTrainer:
                 # Add to buffer
                 self.add_to_buffer(episode_data)
                 
+                # Update progress bar to reflect actual processed episodes
+                processed_episodes += 1
+                pbar.n = processed_episodes
+                pbar.refresh()
+                
                 # Check for checkpoint
                 if ep_num > 0 and ep_num % eval_frequency == 0:
                     pbar.clear()
@@ -434,7 +441,7 @@ class SelfPlayTrainer:
                 last_rand_prob = list(pending_futures.values())[-1][1] if pending_futures else random_prob
             
             avg_loss = np.mean(losses[-100:]) if losses else 0.0
-            royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0.0
+            royalty_rate = (total_royalties / processed_episodes) * 100 if processed_episodes > 0 else 0.0
             current_lr = self.optimizer.param_groups[0]['lr'] if len(self.replay_buffer) >= self.batch_size else self.initial_lr
             
             # Fixed-width formatting to prevent jittering
