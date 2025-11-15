@@ -375,7 +375,8 @@ class SelfPlayTrainer:
         
         # Main training loop - iterate until we've processed all episodes
         # We use a while loop instead of for loop to properly track processed episodes
-        while processed_episodes < num_episodes:
+        try:
+            while processed_episodes < num_episodes:
             # Calculate which episode we're "on" based on processed count
             absolute_episode = processed_episodes
             random_prob = max(0.0, 1.0 - (absolute_episode / (num_episodes * 0.8)))
@@ -539,14 +540,15 @@ class SelfPlayTrainer:
         # Stop producer thread
         stop_producer.set()
         
-        # Wait for all pending async tasks to complete
-        print("\nWaiting for all pending episodes to complete...")
-        with futures_lock:
-            remaining = list(pending_futures.items())
-        
-        for future, (ep_num, rand_prob) in remaining:
-            try:
-                episode_data = future.get(timeout=10)
+        # Wait for all pending async tasks to complete (with timeout)
+        if pending_futures:
+            print("\nWaiting for pending episodes to complete...")
+            with futures_lock:
+                remaining = list(pending_futures.items())
+            
+            for future, (ep_num, rand_prob) in remaining:
+                try:
+                    episode_data = future.get(timeout=1)  # Short timeout
                 if episode_data:
                     final_score = episode_data[-1][1]
                     total_score += final_score
