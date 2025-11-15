@@ -426,19 +426,19 @@ class SelfPlayTrainer:
                     
                     # Check for checkpoint
                     if ep_num > 0 and ep_num % eval_frequency == 0:
-                    pbar.clear()
-                    print(f"\n--- Evaluation at episode {ep_num:,} ---\n")
-                    hands_this_session = ep_num - start_episode + 1
-                    training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
-                    avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
-                    self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
-                                  total_royalties=total_royalties, total_zero=total_zero,
-                                  training_foul_rate=training_foul_rate,
-                                  avg_score_per_hand=avg_score_per_hand,
-                                  start_episode=start_episode, current_episode=ep_num)
-                    checkpoint_path = f'value_net_checkpoint_ep{ep_num}.pth'
-                    torch.save(self.model.state_dict(), checkpoint_path)
-                    print(f"\nCheckpoint saved: {checkpoint_path}\n")
+                        pbar.clear()
+                        print(f"\n--- Evaluation at episode {ep_num:,} ---\n")
+                        hands_this_session = ep_num - start_episode + 1
+                        training_foul_rate = (total_fouls / hands_this_session) * 100 if hands_this_session > 0 else 0
+                        avg_score_per_hand = total_score / hands_this_session if hands_this_session > 0 else 0.0
+                        self._evaluate(total_episodes=hands_this_session, total_fouls=total_fouls, 
+                                      total_royalties=total_royalties, total_zero=total_zero,
+                                      training_foul_rate=training_foul_rate,
+                                      avg_score_per_hand=avg_score_per_hand,
+                                      start_episode=start_episode, current_episode=ep_num)
+                        checkpoint_path = f'value_net_checkpoint_ep{ep_num}.pth'
+                        torch.save(self.model.state_dict(), checkpoint_path)
+                        print(f"\nCheckpoint saved: {checkpoint_path}\n")
             
                 # OPTIMIZATION: Train continuously to keep GPU at 100%
                 # Train on EVERY iteration if buffer has data - this keeps GPU busy
