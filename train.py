@@ -637,21 +637,23 @@ class SelfPlayTrainer:
             foul_rate = test_fouls / len(test_scores) * 100
             
             if total_episodes > 0:
-                print(f"{'='*23}")
+                print(f"{'='*60}")
                 print(f"Training Statistics:")
+                print()
                 if start_episode > 0:
-                    print(f"    Episodes: {start_episode:,} - {current_episode:,} (this session)")
-                    print(f"    Total Hands This Session: {total_episodes:,}")
+                    print(f"  Episodes: {start_episode:,} - {current_episode:,} (this session)")
+                    print(f"  Total Hands This Session: {total_episodes:,}")
                 else:
-                    print(f"    Total Hands: {total_episodes:,}")
-                print(f"    Hands Fouled: {total_fouls:,}/{total_episodes:,} ({training_foul_rate:.1f}%)")
-                print(f"    Hands Scored 0: {total_zero:,}/{total_episodes:,} ({total_zero/total_episodes*100:.1f}%)")
-                print(f"    Hands with Royalties: {total_royalties:,}/{total_episodes:,} ({total_royalties/total_episodes*100:.2f}%)")
-                print(f"    Average Score Per Hand: {avg_score_per_hand:.2f}")
+                    print(f"  Total Hands: {total_episodes:,}")
+                print(f"  Hands Fouled: {total_fouls:,}/{total_episodes:,} ({training_foul_rate:.1f}%)")
+                print(f"  Hands Scored 0: {total_zero:,}/{total_episodes:,} ({total_zero/total_episodes*100:.1f}%)")
+                print(f"  Hands with Royalties: {total_royalties:,}/{total_episodes:,} ({total_royalties/total_episodes*100:.2f}%)")
+                print(f"  Average Score Per Hand: {avg_score_per_hand:.2f}")
                 print()
             
-            print(f"{'='*23}")
+            print(f"{'='*60}")
             print(f"Evaluation Statistics: (50 test hands)")
+            print()
             print(f"  Avg score: {avg_score:.2f} ± {std_score:.2f}")
             print(f"  Range: [{min_score:.1f}, {max_score:.1f}]")
             print(f"  Foul rate: {foul_rate:.1f}%")
