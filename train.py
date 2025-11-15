@@ -428,22 +428,24 @@ class SelfPlayTrainer:
                     loss = self.train_step()
                     losses.append(loss)
             
-            # Update progress bar every iteration
+            # Update progress bar every iteration with fixed-width formatting to prevent jittering
             with futures_lock:
                 pending_count = len(pending_futures)
                 last_rand_prob = list(pending_futures.values())[-1][1] if pending_futures else random_prob
             
             avg_loss = np.mean(losses[-100:]) if losses else 0.0
-            royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
+            royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0.0
             current_lr = self.optimizer.param_groups[0]['lr'] if len(self.replay_buffer) >= self.batch_size else self.initial_lr
+            
+            # Fixed-width formatting to prevent jittering
             pbar.set_postfix({
                 'loss': f'{avg_loss:.4f}',
-                'buffer': len(self.replay_buffer),
-                'random%': f'{last_rand_prob*100:.1f}%',
-                'royalties': f'{total_royalties} ({royalty_rate:.2f}%)',
+                'buffer': f'{len(self.replay_buffer):>6,}',
+                'random%': f'{last_rand_prob*100:>5.1f}%',
+                'royalties': f'{total_royalties:>5,} ({royalty_rate:>5.2f}%)',
                 'lr': f'{current_lr:.2e}',
-                'pending': pending_count
-            })
+                'pending': f'{pending_count:>3}'
+            }, refresh=False)  # refresh=False reduces flicker
             
             # If using random, just continue - background thread handles it
             if use_random:
@@ -504,17 +506,17 @@ class SelfPlayTrainer:
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] = new_lr
                 
-                # Update progress bar
+                # Update progress bar with fixed-width formatting
                 avg_loss = np.mean(losses[-100:]) if losses else 0.0
-                royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0
+                royalty_rate = (total_royalties / (absolute_episode + 1)) * 100 if absolute_episode > 0 else 0.0
                 current_lr = self.optimizer.param_groups[0]['lr']
                 pbar.set_postfix({
                     'loss': f'{avg_loss:.4f}',
-                    'buffer': len(self.replay_buffer),
-                    'random%': f'{random_prob*100:.1f}%',
-                    'royalties': f'{total_royalties} ({royalty_rate:.2f}%)',
+                    'buffer': f'{len(self.replay_buffer):>6,}',
+                    'random%': f'{random_prob*100:>5.1f}%',
+                    'royalties': f'{total_royalties:>5,} ({royalty_rate:>5.2f}%)',
                     'lr': f'{current_lr:.2e}'
-                })
+                }, refresh=False)
             
             # Periodic evaluation and checkpointing
             if absolute_episode > 0 and absolute_episode % eval_frequency == 0:
