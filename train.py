@@ -342,7 +342,7 @@ class SelfPlayTrainer:
         # OPTIMIZATION: Use background thread to continuously submit work
         # This ensures workers NEVER idle - they always have work queued
         pending_futures = {}  # {future: (episode_num, random_prob)}
-        max_pending = self.num_workers * 20  # Keep 20x workers worth of work queued (480 episodes) - VERY AGGRESSIVE
+        max_pending = self.num_workers * 50  # Keep 50x workers worth of work queued (1200 episodes) - EXTREME
         episode_counter = [start_episode]  # Use list for thread-safe counter
         stop_producer = threading.Event()
         futures_lock = threading.Lock()
@@ -434,14 +434,14 @@ class SelfPlayTrainer:
                     torch.save(self.model.state_dict(), checkpoint_path)
                     print(f"\nCheckpoint saved: {checkpoint_path}\n")
             
-            # OPTIMIZATION: Train continuously to keep GPU at 100%
-            # Train on EVERY iteration if buffer has data - this keeps GPU busy
-            if len(self.replay_buffer) >= self.batch_size:
-                # Train multiple times to saturate GPU
-                num_train_steps = 8 if len(self.replay_buffer) >= self.batch_size * 2 else 4
-                for _ in range(num_train_steps):
-                    loss = self.train_step()
-                    losses.append(loss)
+                # OPTIMIZATION: Train continuously to keep GPU at 100%
+                # Train on EVERY iteration if buffer has data - this keeps GPU busy
+                if len(self.replay_buffer) >= self.batch_size:
+                    # Train many times to saturate GPU - increase for H200
+                    num_train_steps = 16 if len(self.replay_buffer) >= self.batch_size * 2 else 8
+                    for _ in range(num_train_steps):
+                        loss = self.train_step()
+                        losses.append(loss)
             
             # Update progress bar - simple display with only essential info
             with futures_lock:
@@ -500,14 +500,14 @@ class SelfPlayTrainer:
             pbar.n = processed_episodes
             pbar.refresh()
             
-            # OPTIMIZATION: Train continuously to keep GPU at 100%
-            # Train on EVERY network episode if buffer has data
-            if len(self.replay_buffer) >= self.batch_size:
-                # Train multiple times to saturate GPU
-                num_train_steps = 8 if len(self.replay_buffer) >= self.batch_size * 2 else 4
-                for _ in range(num_train_steps):
-                    loss = self.train_step()
-                    losses.append(loss)
+                # OPTIMIZATION: Train continuously to keep GPU at 100%
+                # Train on EVERY network episode if buffer has data
+                if len(self.replay_buffer) >= self.batch_size:
+                    # Train many times to saturate GPU - increase for H200
+                    num_train_steps = 16 if len(self.replay_buffer) >= self.batch_size * 2 else 8
+                    for _ in range(num_train_steps):
+                        loss = self.train_step()
+                        losses.append(loss)
                 
                 # Learning rate scheduling: reduce LR as training progresses
                 if use_lr_schedule and absolute_episode > 0 and absolute_episode % 10000 == 0:
@@ -687,12 +687,12 @@ def main():
     
     # Train for millions of hands
     # Start with smaller number for testing, then scale up
-    num_episodes = 1_000_000  # 1 million hands
+    num_episodes = 20_000_000  # 20 million hands
     
     trainer.train(
         num_episodes=num_episodes,
         episodes_per_update=10,
-        eval_frequency=10000,  # Evaluate every 10k hands
+        eval_frequency=250000,  # Checkpoint every 250k hands
         use_lr_schedule=True  # Enable learning rate scheduling for better convergence
     )
     
